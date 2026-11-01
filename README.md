@@ -168,35 +168,6 @@ curl http://127.0.0.1:8317/v1/chat/completions \
 
 ---
 
-## 如何注册到 CLIProxyAPI 官方插件商店
-
-CLIProxyAPI 官方插件注册表仓库为 **[router-for-me/CLIProxyAPI-Plugins-Store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store)**。注册步骤如下：
-
-1. 确保本仓库已发布符合规范的 GitHub Release（Tag 为 `v1.0.0`，包含 `aistudio2api_1.0.0_<goos>_<goarch>.zip` 与 `checksums.txt`）。
-2. Fork [router-for-me/CLIProxyAPI-Plugins-Store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store)，在 `registry.json` 的 `plugins` 数组末尾添加以下条目并提交 Pull Request：
-
-```json
-{
-  "id": "aistudio2api",
-  "name": "AIStudio2API",
-  "description": "Port of Mag1cFall/AIStudio2API as a native CLIProxyAPI plugin. Proxies Google AI Studio Playground & Build models (Gemini 3.8 Flash, Build, Veo, Imagen, TTS) via in-process SpiderMonkey BotGuard WAA VM.",
-  "author": "jianli9158 (Upstream: Mag1cFall)",
-  "version": "1.0.0",
-  "repository": "https://github.com/jianli9158/cpa-plugin-aistudio2api",
-  "homepage": "https://github.com/jianli9158/cpa-plugin-aistudio2api",
-  "license": "MIT",
-  "tags": [
-    "Provider",
-    "Executor",
-    "Scheduler",
-    "Management",
-    "Gemini"
-  ]
-}
-```
-
----
-
 ## 开源协议 (License)
 
 本项目基于 **[MIT License](./LICENSE)** 开源：

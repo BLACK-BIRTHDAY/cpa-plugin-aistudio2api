@@ -168,35 +168,6 @@ curl http://127.0.0.1:8317/v1/chat/completions \
 
 ---
 
-## Registering in the CLIProxyAPI Plugin Store
-
-To register this plugin in the official **[router-for-me/CLIProxyAPI-Plugins-Store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store)**:
-
-1. Ensure the GitHub Release `v1.0.0` is published with `aistudio2api_1.0.0_<goos>_<goarch>.zip` and `checksums.txt`.
-2. Fork [router-for-me/CLIProxyAPI-Plugins-Store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store), append the following entry to `plugins` in `registry.json`, and open a Pull Request:
-
-```json
-{
-  "id": "aistudio2api",
-  "name": "AIStudio2API",
-  "description": "Port of Mag1cFall/AIStudio2API as a native CLIProxyAPI plugin. Proxies Google AI Studio Playground & Build models (Gemini 3.8 Flash, Build, Veo, Imagen, TTS) via in-process SpiderMonkey BotGuard WAA VM.",
-  "author": "jianli9158 (Upstream: Mag1cFall)",
-  "version": "1.0.0",
-  "repository": "https://github.com/jianli9158/cpa-plugin-aistudio2api",
-  "homepage": "https://github.com/jianli9158/cpa-plugin-aistudio2api",
-  "license": "MIT",
-  "tags": [
-    "Provider",
-    "Executor",
-    "Scheduler",
-    "Management",
-    "Gemini"
-  ]
-}
-```
-
----
-
 ## License
 
 Released under the **[MIT License](./LICENSE)**:
