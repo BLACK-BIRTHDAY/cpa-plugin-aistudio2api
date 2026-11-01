@@ -1,0 +1,420 @@
+package cpa
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+
+	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
+	"github.com/Mag1cFall/AIStudio2API/internal/api"
+	"github.com/Mag1cFall/AIStudio2API/internal/pluginapi"
+)
+
+type rpcManagementRequest struct {
+	pluginapi.ManagementRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
+type rpcManagementRegistrationResponse struct {
+	Routes    []pluginapi.ManagementRoute `json:"routes,omitempty"`
+	Resources []pluginapi.ResourceRoute   `json:"resources,omitempty"`
+}
+
+func (p *Plugin) handleCLIRegister() (any, error) {
+	return pluginapi.CommandLineRegistrationResponse{
+		Flags: []pluginapi.CommandLineFlag{
+			{
+				Name:         "aistudio2api-import-chrome",
+				Type:         "bool",
+				DefaultValue: "false",
+				Usage:        "Discover and import local Chrome profiles into AIStudio2API",
+			},
+			{
+				Name:         "aistudio2api-status",
+				Type:         "bool",
+				DefaultValue: "false",
+				Usage:        "Print AIStudio2API plugin account pool and SpiderMonkey runtime status",
+			},
+		},
+	}, nil
+}
+
+func (p *Plugin) handleCLIRun(raw []byte) (any, error) {
+	var req pluginapi.CommandLineExecutionRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, err
+	}
+	rt, err := p.Runtime()
+	if err != nil {
+		return pluginapi.CommandLineExecutionResponse{
+			ExitCode: 1,
+			Stderr:   []byte("Failed to initialize AIStudio2API runtime: " + err.Error() + "\n"),
+		}, nil
+	}
+
+	if flag, ok := req.TriggeredFlags["aistudio2api-import-chrome"]; ok && flag.Set && strings.EqualFold(flag.Value, "true") {
+		profiles, err := rt.Admin.ChromeImportProfiles(p.ctx)
+		if err != nil {
+			return pluginapi.CommandLineExecutionResponse{
+				ExitCode: 1,
+				Stderr:   []byte("Chrome discovery failed: " + err.Error() + "\n"),
+			}, nil
+		}
+		if len(profiles) == 0 {
+			return pluginapi.CommandLineExecutionResponse{
+				ExitCode: 0,
+				Stdout:   []byte("No new importable Chrome profiles found.\n"),
+			}, nil
+		}
+		ids := make([]string, 0, len(profiles))
+		for _, prof := range profiles {
+			ids = append(ids, prof.ID)
+		}
+		imported, err := rt.Admin.ImportChromeAccounts(p.ctx, api.ChromeImportInput{AccountIDs: ids})
+		if err != nil {
+			return pluginapi.CommandLineExecutionResponse{
+				ExitCode: 1,
+				Stderr:   []byte("Chrome import failed: " + err.Error() + "\n"),
+			}, nil
+		}
+		var auths []pluginapi.AuthData
+		for _, acc := range imported {
+			if ad, err := p.buildAuthDataForAccount(rt, acc); err == nil {
+				auths = append(auths, ad)
+			}
+		}
+		out, _ := json.MarshalIndent(imported, "", "  ")
+		return pluginapi.CommandLineExecutionResponse{
+			ExitCode: 0,
+			Stdout:   []byte(fmt.Sprintf("Imported %d Chrome account(s):\n%s\n", len(imported), string(out))),
+			Auths:    auths,
+		}, nil
+	}
+
+	if flag, ok := req.TriggeredFlags["aistudio2api-status"]; ok && flag.Set && strings.EqualFold(flag.Value, "true") {
+		status, _ := rt.Admin.Status(p.ctx)
+		accounts, _ := rt.Admin.Accounts(p.ctx)
+		out, _ := json.MarshalIndent(map[string]any{
+			"status":   status,
+			"accounts": accounts,
+		}, "", "  ")
+		return pluginapi.CommandLineExecutionResponse{
+			ExitCode: 0,
+			Stdout:   []byte(string(out) + "\n"),
+		}, nil
+	}
+
+	return pluginapi.CommandLineExecutionResponse{ExitCode: 0}, nil
+}
+
+func (p *Plugin) handleManagementRegister() (any, error) {
+	return rpcManagementRegistrationResponse{
+		Routes: []pluginapi.ManagementRoute{
+			{Method: http.MethodGet, Path: "/v0/management/aistudio2api/status", Description: "Get AIStudio2API runtime status, accounts, models, and cooldowns"},
+			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/service/start", Description: "Start AIStudio2API generation service and SpiderMonkey WAA workers"},
+			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/service/stop", Description: "Stop AIStudio2API generation service"},
+			{Method: http.MethodGet, Path: "/v0/management/aistudio2api/accounts", Description: "List AIStudio2API accounts"},
+			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/accounts", Description: "Import AIStudio2API account from Cookie header or StorageState JSON"},
+			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/accounts/discover-cookies", Description: "Discover Google accounts inside pasted Cookie text"},
+			{Method: http.MethodGet, Path: "/v0/management/aistudio2api/chrome-profiles", Description: "List importable local Chrome profiles"},
+			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/accounts/import-chrome", Description: "Import selected local Chrome profiles"},
+			{Method: http.MethodGet, Path: "/v0/management/aistudio2api/cookie-browsers", Description: "List local remote-debugging browsers"},
+			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/accounts/refresh", Description: "Refresh an account's model catalog and benefit tier"},
+			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/accounts/update", Description: "Update account settings (enabled, proxy, locale, timezone)"},
+			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/accounts/delete", Description: "Delete an account"},
+			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/accounts/sync-auth", Description: "Sync all AIStudio2API accounts to CLIProxyAPI auths/ directory"},
+			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/cooldowns/clear", Description: "Clear account cooldowns"},
+			{Method: http.MethodGet, Path: "/v0/management/aistudio2api/models", Description: "List discovered AI Studio models"},
+			{Method: http.MethodGet, Path: "/v0/management/aistudio2api/logs", Description: "List recent AIStudio2API logs"},
+		},
+		Resources: []pluginapi.ResourceRoute{
+			{
+				Path:        "/accounts",
+				Menu:        "AI Studio (WAA)",
+				Description: "AI Studio 账户、SpiderMonkey WAA 与冷却管理",
+			},
+		},
+	}, nil
+}
+
+func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
+	var req rpcManagementRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, err
+	}
+
+	path := strings.TrimSpace(req.Path)
+	method := strings.ToUpper(strings.TrimSpace(req.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
+
+	// Serve Web Resource UI (matches both relative "/accounts" and full "/v0/resource/plugins/aistudio2api/accounts")
+	if path == "/accounts" || path == "/" || strings.HasPrefix(path, "/v0/resource/plugins/aistudio2api") {
+		return pluginapi.ManagementResponse{
+			StatusCode: http.StatusOK,
+			Headers: http.Header{
+				"Content-Type":  []string{"text/html; charset=utf-8"},
+				"Cache-Control": []string{"no-store"},
+			},
+			Body: []byte(webUIDashboardHTML),
+		}, nil
+	}
+	if strings.HasPrefix(path, "/aistudio2api/") {
+		path = "/v0/management" + path
+	}
+	rt, err := p.Runtime()
+	if err != nil {
+		return jsonManagementResponse(http.StatusInternalServerError, map[string]any{
+			"error": err.Error(),
+		}), nil
+	}
+
+	switch {
+	case method == http.MethodGet && path == "/v0/management/aistudio2api/status":
+		status, _ := rt.Admin.Status(p.ctx)
+		accounts, _ := rt.Admin.Accounts(p.ctx)
+		cooldowns, _ := rt.Admin.Cooldowns(p.ctx)
+		activeReqs, _ := rt.Admin.Requests(p.ctx)
+		models, _ := rt.Admin.CatalogModels(p.ctx)
+		return jsonManagementResponse(http.StatusOK, map[string]any{
+			"status":          status,
+			"accounts":        accounts,
+			"cooldowns":       cooldowns,
+			"active_requests": activeReqs,
+			"models_count":    len(models),
+			"waa_backend":     p.appCfg.WAABackend,
+			"data_dir":        p.pluginCfg.DataDir,
+			"accounts_dir":    p.appCfg.AuthStates,
+		}), nil
+
+	case method == http.MethodPost && path == "/v0/management/aistudio2api/service/start":
+		status, err := rt.Admin.StartService(p.ctx)
+		if err != nil {
+			return jsonManagementResponse(http.StatusBadGateway, map[string]any{"error": err.Error(), "status": status}), nil
+		}
+		return jsonManagementResponse(http.StatusOK, map[string]any{"status": status}), nil
+
+	case method == http.MethodPost && path == "/v0/management/aistudio2api/service/stop":
+		status, err := rt.Admin.StopService(p.ctx)
+		if err != nil {
+			return jsonManagementResponse(http.StatusBadGateway, map[string]any{"error": err.Error(), "status": status}), nil
+		}
+		return jsonManagementResponse(http.StatusOK, map[string]any{"status": status}), nil
+
+	case method == http.MethodGet && path == "/v0/management/aistudio2api/accounts":
+		accounts, err := rt.Admin.Accounts(p.ctx)
+		if err != nil {
+			return jsonManagementResponse(http.StatusInternalServerError, map[string]any{"error": err.Error()}), nil
+		}
+		return jsonManagementResponse(http.StatusOK, map[string]any{"accounts": accounts}), nil
+
+	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/discover-cookies":
+		var input api.CookieImportInput
+		if err := json.Unmarshal(req.Body, &input); err != nil {
+			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
+		}
+		discovered, err := rt.Admin.DiscoverCookieAccounts(p.ctx, input)
+		if err != nil {
+			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
+		}
+		return jsonManagementResponse(http.StatusOK, map[string]any{"accounts": discovered}), nil
+
+	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts":
+		var body struct {
+			Label        string                 `json:"label"`
+			Email        string                 `json:"email"`
+			AuthUser     int                    `json:"auth_user"`
+			Proxy        string                 `json:"proxy"`
+			Locale       string                 `json:"locale"`
+			Timezone     string                 `json:"timezone"`
+			Cookies      string                 `json:"cookies"`
+			StorageState *aistudio.StorageState `json:"storage_state"`
+		}
+		if err := json.Unmarshal(req.Body, &body); err != nil {
+			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": "invalid JSON body: " + err.Error()}), nil
+		}
+		var state aistudio.StorageState
+		if body.StorageState != nil && len(body.StorageState.Cookies) > 0 {
+			state = *body.StorageState
+		} else if strings.TrimSpace(body.Cookies) != "" {
+			parsed, err := aistudio.ParseCookieText(body.Cookies)
+			if err != nil {
+				return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": "failed to parse cookies: " + err.Error()}), nil
+			}
+			state = parsed
+		} else {
+			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": "cookies or storage_state is required"}), nil
+		}
+
+		label := strings.TrimSpace(body.Label)
+		if label == "" {
+			label = strings.TrimSpace(body.Email)
+		}
+		created, err := rt.Admin.ImportAccountState(p.ctx, api.AccountStateInput{
+			Label:        label,
+			AuthUser:     body.AuthUser,
+			Proxy:        body.Proxy,
+			Locale:       body.Locale,
+			Timezone:     body.Timezone,
+			StorageState: state,
+		})
+		if err != nil {
+			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
+		}
+		_ = p.SyncAccountToHostAuth(req.HostCallbackID, created)
+		go func() { _ = rt.EnsureRunning(p.ctx) }()
+		return jsonManagementResponse(http.StatusCreated, map[string]any{"account": created}), nil
+
+	case method == http.MethodGet && path == "/v0/management/aistudio2api/chrome-profiles":
+		profiles, err := rt.Admin.ChromeImportProfiles(p.ctx)
+		if err != nil {
+			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
+		}
+		return jsonManagementResponse(http.StatusOK, map[string]any{"profiles": profiles}), nil
+
+	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/import-chrome":
+		var input api.ChromeImportInput
+		if err := json.Unmarshal(req.Body, &input); err != nil {
+			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
+		}
+		imported, err := rt.Admin.ImportChromeAccounts(p.ctx, input)
+		if err != nil {
+			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
+		}
+		for _, acc := range imported {
+			_ = p.SyncAccountToHostAuth(req.HostCallbackID, acc)
+		}
+		go func() { _ = rt.EnsureRunning(p.ctx) }()
+		return jsonManagementResponse(http.StatusOK, map[string]any{"accounts": imported}), nil
+
+	case method == http.MethodGet && path == "/v0/management/aistudio2api/cookie-browsers":
+		browsers, err := rt.Admin.CookieBrowsers(p.ctx)
+		if err != nil {
+			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
+		}
+		return jsonManagementResponse(http.StatusOK, map[string]any{"browsers": browsers}), nil
+
+	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/refresh":
+		var body struct {
+			AccountID string `json:"account_id"`
+		}
+		_ = json.Unmarshal(req.Body, &body)
+		if strings.TrimSpace(body.AccountID) == "" {
+			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": "account_id is required"}), nil
+		}
+		models, err := rt.RefreshAccountModels(p.ctx, body.AccountID)
+		if err != nil {
+			return jsonManagementResponse(http.StatusBadGateway, map[string]any{"error": err.Error()}), nil
+		}
+		if accounts, err := rt.Admin.Accounts(p.ctx); err == nil {
+			for _, acc := range accounts {
+				if strings.EqualFold(acc.ID, body.AccountID) {
+					_ = p.SyncAccountToHostAuth(req.HostCallbackID, acc)
+				}
+			}
+		}
+		return jsonManagementResponse(http.StatusOK, map[string]any{"models_count": len(models), "models": models}), nil
+
+	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/update":
+		var body struct {
+			AccountID string `json:"account_id"`
+			Enabled   bool   `json:"enabled"`
+			Proxy     string `json:"proxy"`
+			Locale    string `json:"locale"`
+			Timezone  string `json:"timezone"`
+		}
+		if err := json.Unmarshal(req.Body, &body); err != nil {
+			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
+		}
+		updated, err := rt.Admin.UpdateAccount(p.ctx, body.AccountID, api.AccountInput{
+			Label:    body.AccountID,
+			Enabled:  body.Enabled,
+			Proxy:    body.Proxy,
+			Locale:   body.Locale,
+			Timezone: body.Timezone,
+		})
+		if err != nil {
+			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
+		}
+		_ = p.SyncAccountToHostAuth(req.HostCallbackID, updated)
+		return jsonManagementResponse(http.StatusOK, map[string]any{"account": updated}), nil
+
+	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/delete":
+		var body struct {
+			AccountID string `json:"account_id"`
+		}
+		if err := json.Unmarshal(req.Body, &body); err != nil {
+			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
+		}
+		if err := rt.Admin.DeleteAccount(p.ctx, body.AccountID); err != nil {
+			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
+		}
+		p.RemoveAccountFromHostAuth(body.AccountID)
+		return jsonManagementResponse(http.StatusOK, map[string]any{"deleted": body.AccountID}), nil
+
+	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/sync-auth":
+		accounts, err := rt.Admin.Accounts(p.ctx)
+		if err != nil {
+			return jsonManagementResponse(http.StatusInternalServerError, map[string]any{"error": err.Error()}), nil
+		}
+		synced := 0
+		var syncErrors []string
+		for _, acc := range accounts {
+			if err := p.SyncAccountToHostAuth(req.HostCallbackID, acc); err != nil {
+				syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", acc.ID, err))
+			} else {
+				synced++
+			}
+		}
+		return jsonManagementResponse(http.StatusOK, map[string]any{
+			"synced": synced,
+			"errors": syncErrors,
+		}), nil
+
+	case method == http.MethodPost && path == "/v0/management/aistudio2api/cooldowns/clear":
+		var body struct {
+			AccountID string `json:"account_id"`
+			Scope     string `json:"scope"`
+		}
+		_ = json.Unmarshal(req.Body, &body)
+		if strings.TrimSpace(body.AccountID) != "" {
+			if err := rt.Admin.ClearCooldown(p.ctx, body.AccountID, body.Scope); err != nil {
+				return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
+			}
+		} else {
+			for _, st := range rt.Pool().Status() {
+				_ = rt.Admin.ClearCooldown(p.ctx, st.ID, body.Scope)
+			}
+		}
+		return jsonManagementResponse(http.StatusOK, map[string]any{"cleared": true}), nil
+
+	case method == http.MethodGet && path == "/v0/management/aistudio2api/models":
+		models, err := rt.Admin.CatalogModels(p.ctx)
+		if err != nil || len(models) == 0 {
+			models = p.collectRawCatalogModels("")
+		}
+		return jsonManagementResponse(http.StatusOK, map[string]any{"models": models}), nil
+
+	case method == http.MethodGet && path == "/v0/management/aistudio2api/logs":
+		logs := rt.RecentLogs()
+		return jsonManagementResponse(http.StatusOK, map[string]any{"logs": logs}), nil
+
+	default:
+		return jsonManagementResponse(http.StatusNotFound, map[string]any{
+			"error": fmt.Sprintf("route %s %s not found", method, path),
+		}), nil
+	}
+}
+
+func jsonManagementResponse(status int, payload any) pluginapi.ManagementResponse {
+	raw, _ := json.Marshal(payload)
+	return pluginapi.ManagementResponse{
+		StatusCode: status,
+		Headers: http.Header{
+			"Content-Type": []string{"application/json; charset=utf-8"},
+		},
+		Body: raw,
+	}
+}

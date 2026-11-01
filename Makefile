@@ -1,0 +1,51 @@
+GOOS ?= $(shell go env GOOS)
+GOARCH ?= $(shell go env GOARCH)
+SPIDERMONKEY_VERSION ?= v152.0.4-aistudio2api.1
+SPIDERMONKEY_DIR := $(CURDIR)/spidermonkey
+
+ifeq ($(GOOS),darwin)
+	EXT := .dylib
+else ifeq ($(GOOS),windows)
+	EXT := .dll
+else
+	EXT := .so
+endif
+
+OUT_DIR := dist/plugins/$(GOOS)/$(GOARCH)
+OUT_FILE := $(OUT_DIR)/aistudio2api$(EXT)
+
+.PHONY: all spidermonkey build test sync-chrome install clean
+
+all: build
+
+spidermonkey:
+	@if [ ! -d "$(SPIDERMONKEY_DIR)/lib" ]; then \
+		mkdir -p "$(SPIDERMONKEY_DIR)"; \
+		curl -fsSL "https://github.com/Mag1cFall/firefox/releases/download/$(SPIDERMONKEY_VERSION)/spidermonkey-$(SPIDERMONKEY_VERSION)-$(GOOS)-$(GOARCH).tar.gz" | tar -xz -C "$(SPIDERMONKEY_DIR)"; \
+	fi
+
+build: spidermonkey
+	mkdir -p $(OUT_DIR)
+	CGO_ENABLED=1 \
+	CGO_CXXFLAGS="-I$(SPIDERMONKEY_DIR)/include" \
+	CGO_LDFLAGS="-L$(SPIDERMONKEY_DIR)/lib" \
+	go build -buildmode=c-shared -o $(OUT_FILE) ./cmd/aistudio2api-plugin
+
+test: spidermonkey
+	CGO_ENABLED=1 \
+	CGO_CXXFLAGS="-I$(SPIDERMONKEY_DIR)/include" \
+	CGO_LDFLAGS="-L$(SPIDERMONKEY_DIR)/lib" \
+	go test -v ./internal/cpa/...
+
+
+sync-chrome:
+	mkdir -p ~/.aistudio2api/chrome-cache/Default
+	cp -f ~/Library/Application\ Support/Google/Chrome/Local\ State ~/.aistudio2api/chrome-cache/Local\ State
+	cp -f ~/Library/Application\ Support/Google/Chrome/Last\ Version ~/.aistudio2api/chrome-cache/Last\ Version 2>/dev/null || true
+	cp -f ~/Library/Application\ Support/Google/Chrome/Default/Preferences ~/.aistudio2api/chrome-cache/Default/Preferences
+	cp -f ~/Library/Application\ Support/Google/Chrome/Default/Web\ Data ~/.aistudio2api/chrome-cache/Default/Web\ Data 2>/dev/null || true
+	cp -f ~/Library/Application\ Support/Google/Chrome/Default/Cookies ~/.aistudio2api/chrome-cache/Default/Cookies 2>/dev/null || true
+install: build
+	cp -f $(OUT_FILE) "/Users/jianli/Library/Application Support/com.cpa.gui/cpa-core/plugins/darwin/arm64/aistudio2api.dylib"
+clean:
+	rm -rf dist

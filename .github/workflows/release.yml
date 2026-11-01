@@ -1,0 +1,121 @@
+name: Release CLIProxyAPI Plugin
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.0.0)"
+        required: true
+        default: "v1.0.0"
+
+permissions:
+  contents: write
+
+env:
+  PLUGIN_ID: aistudio2api
+  GO_VERSION: "1.27.0"
+  SPIDERMONKEY_TAG: v152.0.4-aistudio2api.1
+
+jobs:
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+            os: macos-15
+            ext: .dylib
+            sm_platform: darwin-arm64
+          - goos: linux
+            goarch: amd64
+            os: ubuntu-24.04
+            ext: .so
+            sm_platform: linux-amd64
+          - goos: linux
+            goarch: arm64
+            os: ubuntu-24.04-arm
+            ext: .so
+            sm_platform: linux-arm64
+          - goos: windows
+            goarch: amd64
+            os: windows-2022
+            ext: .dll
+            sm_platform: windows-amd64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - name: Download SpiderMonkey (${{ matrix.sm_platform }})
+        shell: bash
+        run: |
+          mkdir -p spidermonkey
+          url="https://github.com/Mag1cFall/firefox/releases/download/${SPIDERMONKEY_TAG}/spidermonkey-${SPIDERMONKEY_TAG}-${{ matrix.sm_platform }}.tar.gz"
+          curl -fsSL "$url" | tar -xz -C spidermonkey
+
+      - name: Determine Version
+        id: ver
+        shell: bash
+        run: |
+          RAW_TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${RAW_TAG#v}"
+          echo "tag=${RAW_TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build Dynamic Library & Package Zip
+        shell: bash
+        run: |
+          mkdir -p out
+          LIB_NAME="${PLUGIN_ID}${{ matrix.ext }}"
+          ZIP_NAME="${PLUGIN_ID}_${{ steps.ver.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}.zip"
+          export CGO_ENABLED=1
+          export GOOS=${{ matrix.goos }}
+          export GOARCH=${{ matrix.goarch }}
+          export CGO_CXXFLAGS="-I${PWD}/spidermonkey/include"
+          export CGO_LDFLAGS="-L${PWD}/spidermonkey/lib"
+          go build -trimpath -buildmode=c-shared -o "out/${LIB_NAME}" ./cmd/aistudio2api-plugin
+          cd out
+          7z a -tzip "../${ZIP_NAME}" "${LIB_NAME}"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: "${{ env.PLUGIN_ID }}_*_${{ matrix.goos }}_${{ matrix.goarch }}.zip"
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums.txt & Publish Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd artifacts
+          sha256sum *.zip > checksums.txt
+          cat checksums.txt
+          RAW_TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          if gh release view "$RAW_TAG" >/dev/null 2>&1; then
+            gh release upload "$RAW_TAG" *.zip checksums.txt --clobber
+          else
+            gh release create "$RAW_TAG" *.zip checksums.txt --title "$RAW_TAG" --generate-notes
+          fi

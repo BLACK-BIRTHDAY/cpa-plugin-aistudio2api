@@ -1,0 +1,86 @@
+package app
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
+	"github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative"
+	"github.com/Mag1cFall/AIStudio2API/internal/config"
+)
+
+// prepareWAABackend 按 WAA 后端准备运行依赖与账户登录驱动
+func prepareWAABackend(ctx context.Context, cfg config.Config, requests *requestRegistry, accounts int, proxy string) (string, aistudio.IsolatedLoginDriver, error) {
+	if cfg.WAABackend == config.WAABackendSpiderMonkey {
+		requests.log("service", "INFO", fmt.Sprintf("运行时装配 | 2/3 | WAA 后端=spidermonkey | 账户=%d", accounts))
+		return "", &lazyLoginDriver{timeout: cfg.RequestTimeout, proxy: proxy}, nil
+	}
+	requests.log("service", "INFO", fmt.Sprintf("运行时装配 | 2/3 | 校验 Camoufox | 账户=%d", accounts))
+	camoufoxPath, err := camoufoxnative.FindExecutable(ctx, proxy)
+	if err != nil {
+		return "", nil, err
+	}
+	removeStaleCamoufoxProfiles(requests)
+	login, err := aistudio.NewNativeLoginDriver(camoufoxPath, cfg.RequestTimeout)
+	if err != nil {
+		return "", nil, err
+	}
+	return camoufoxPath, login, nil
+}
+
+// removeStaleCamoufoxProfiles 清理上次进程遗留的 Camoufox profile
+func removeStaleCamoufoxProfiles(requests *requestRegistry) {
+	if removed, err := camoufoxnative.RemoveStaleProfiles(); err != nil {
+		requests.log("service", "WARN", fmt.Sprintf(
+			"遗留 Camoufox profile 清理失败 | 已删除=%d | 错误=%s", removed, strings.TrimSpace(err.Error()),
+		))
+	} else if removed > 0 {
+		requests.log("service", "INFO", fmt.Sprintf("遗留 Camoufox profile 已清理 | 数量=%d", removed))
+	}
+}
+
+// newWAAWorker 启动账户的 Camoufox 或 SpiderMonkey Worker
+func newWAAWorker(ctx context.Context, accountID string, options camoufoxnative.Options) (*aistudio.NativeWorker, error) {
+	if options.ExecutablePath == "" {
+		return aistudio.NewSpiderMonkeyWorker(ctx, accountID, options)
+	}
+	return aistudio.NewNativeWorker(ctx, accountID, options)
+}
+
+// lazyLoginDriver 在第一次登录或校验账户时定位 Camoufox 并创建登录驱动
+type lazyLoginDriver struct {
+	timeout time.Duration
+	proxy   string
+	mu      sync.Mutex
+	driver  *aistudio.NativeLoginDriver
+}
+
+func (lazy *lazyLoginDriver) resolve(ctx context.Context) (*aistudio.NativeLoginDriver, error) {
+	lazy.mu.Lock()
+	defer lazy.mu.Unlock()
+	if lazy.driver != nil {
+		return lazy.driver, nil
+	}
+	camoufoxPath, err := camoufoxnative.FindExecutable(ctx, lazy.proxy)
+	if err != nil {
+		return nil, err
+	}
+	driver, err := aistudio.NewNativeLoginDriver(camoufoxPath, lazy.timeout)
+	if err != nil {
+		return nil, err
+	}
+	lazy.driver = driver
+	return driver, nil
+}
+
+// Login 使用按需准备的 Camoufox 执行隔离登录
+func (lazy *lazyLoginDriver) Login(ctx context.Context, request aistudio.IsolatedLoginRequest) (aistudio.IsolatedLoginResult, error) {
+	driver, err := lazy.resolve(ctx)
+	if err != nil {
+		return aistudio.IsolatedLoginResult{}, err
+	}
+	return driver.Login(ctx, request)
+}

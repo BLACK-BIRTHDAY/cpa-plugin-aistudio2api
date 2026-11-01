@@ -1,0 +1,305 @@
+package cpa
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
+	"github.com/Mag1cFall/AIStudio2API/internal/pluginapi"
+)
+
+type rpcRequestCompletion struct {
+	pluginapi.RequestCompletion
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
+type rpcQuotaFetchRequest struct {
+	pluginapi.QuotaFetchRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
+type rpcQuotaResetRequest struct {
+	pluginapi.QuotaResetRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
+func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
+	var req pluginapi.SchedulerPickRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, fmt.Errorf("decode scheduler.pick request: %w", err)
+	}
+	if len(req.Candidates) == 0 {
+		return pluginapi.SchedulerPickResponse{Handled: false}, nil
+	}
+
+	// Only handle scheduling when candidates belong to aistudio2api.
+	aistudioCandidates := make([]pluginapi.SchedulerAuthCandidate, 0, len(req.Candidates))
+	for _, cand := range req.Candidates {
+		if isAIStudioProvider(cand.Provider) || isAIStudioCandidate(cand) {
+			aistudioCandidates = append(aistudioCandidates, cand)
+		}
+	}
+	if len(aistudioCandidates) == 0 {
+		return pluginapi.SchedulerPickResponse{Handled: false}, nil
+	}
+
+	rt, err := p.Runtime()
+	if err != nil {
+		return pluginapi.SchedulerPickResponse{
+			Handled:         true,
+			DelegateBuiltin: pluginapi.SchedulerBuiltinRoundRobin,
+		}, nil
+	}
+
+	cleanModel := StripModelPrefix(req.Model, p.Config().ModelPrefix)
+	cleanModel = strings.TrimPrefix(cleanModel, "models/")
+	baseModel, _, suffixErr := aistudio.ApplyModelSuffix(cleanModel, aistudio.GenerationConfig{})
+	if suffixErr == nil && baseModel != "" {
+		cleanModel = baseModel
+	}
+	cleanModel = rt.Pool().CanonicalModelID(cleanModel)
+
+	candidateByAccount := make(map[string]string, len(aistudioCandidates))
+	var poolFallbackCandidateID string
+	for _, cand := range aistudioCandidates {
+		if strings.EqualFold(cand.Status, "disabled") || strings.EqualFold(cand.Status, "unavailable") {
+			continue
+		}
+		accID := extractAccountIDFromAuth(nil, cand.Metadata, cand.Attributes)
+		if accID == "" && strings.Contains(cand.ID, "@") {
+			accID = strings.ToLower(strings.TrimSpace(cand.ID))
+		}
+		if accID != "" {
+			candidateByAccount[accID] = cand.ID
+		} else if poolFallbackCandidateID == "" {
+			poolFallbackCandidateID = cand.ID
+		}
+	}
+
+	// Classify candidates using AIStudio2API's native AccountPool (respecting benefit tiers, model catalog, cooldowns, and active concurrency)
+	groups, classifyErr := rt.Pool().ClassifyCandidates(p.ctx, aistudio.AccountSelection{
+		ModelID: cleanModel,
+		Method:  "generateContent",
+	}, nil)
+
+	if classifyErr == nil {
+		orderedTiers := [][]string{
+			groups.WarmReady,
+			groups.StandbyReady,
+			groups.WarmAvailable,
+			groups.StandbyBusy,
+			groups.WarmBusy,
+		}
+		for _, tier := range orderedTiers {
+			for _, accID := range tier {
+				if authID, ok := candidateByAccount[strings.ToLower(strings.TrimSpace(accID))]; ok && authID != "" {
+					return pluginapi.SchedulerPickResponse{
+						Handled: true,
+						AuthID:  authID,
+					}, nil
+				}
+			}
+		}
+
+		// If a generic pool auth file exists and at least one pool account is eligible, pick it
+		totalEligible := len(groups.WarmReady) + len(groups.StandbyReady) + len(groups.WarmAvailable) + len(groups.StandbyBusy) + len(groups.WarmBusy)
+		if totalEligible > 0 && poolFallbackCandidateID != "" {
+			return pluginapi.SchedulerPickResponse{
+				Handled: true,
+				AuthID:  poolFallbackCandidateID,
+			}, nil
+		}
+
+		// If all accounts in the pool are cooling down for this model and cooldown exceeds 60s, report 429 cooldown
+		if totalEligible == 0 && !groups.EarliestCooldown.Until.IsZero() && time.Until(groups.EarliestCooldown.Until) > time.Minute {
+			return pluginapi.SchedulerPickResponse{
+				Handled:      true,
+				Reject:       true,
+				RejectCode:   "rate_limit_exceeded",
+				RejectReason: fmt.Sprintf("all AI Studio accounts for model %s are cooling down until %s (%s)", cleanModel, groups.EarliestCooldown.Until.Format(time.RFC3339), groups.EarliestCooldown.Reason),
+			}, nil
+		}
+	}
+
+	// Fallback: match any ready/busy account from Pool.Status()
+	for _, st := range rt.Pool().Status() {
+		if !st.Enabled || st.State == aistudio.AccountCooldown || st.State == aistudio.AccountAuthRequired {
+			continue
+		}
+		if authID, ok := candidateByAccount[strings.ToLower(strings.TrimSpace(st.ID))]; ok && authID != "" {
+			return pluginapi.SchedulerPickResponse{
+				Handled: true,
+				AuthID:  authID,
+			}, nil
+		}
+	}
+
+	if poolFallbackCandidateID != "" {
+		return pluginapi.SchedulerPickResponse{
+			Handled: true,
+			AuthID:  poolFallbackCandidateID,
+		}, nil
+	}
+
+	return pluginapi.SchedulerPickResponse{
+		Handled:         true,
+		DelegateBuiltin: pluginapi.SchedulerBuiltinRoundRobin,
+	}, nil
+}
+
+func isAIStudioCandidate(cand pluginapi.SchedulerAuthCandidate) bool {
+	if cand.Attributes != nil && isAIStudioProvider(cand.Attributes["provider"]) {
+		return true
+	}
+	if cand.Metadata != nil {
+		if p, ok := cand.Metadata["provider"].(string); ok && isAIStudioProvider(p) {
+			return true
+		}
+		if t, ok := cand.Metadata["type"].(string); ok && isAIStudioProvider(t) {
+			return true
+		}
+	}
+	idLower := strings.ToLower(strings.TrimSpace(cand.ID))
+	return strings.HasPrefix(idLower, "aistudio2api") || strings.HasPrefix(idLower, "aistudio-")
+}
+
+func (p *Plugin) handleRequestComplete(raw []byte) (any, error) {
+	var req rpcRequestCompletion
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, err
+	}
+	return struct{}{}, nil
+}
+
+func (p *Plugin) handleQuotaIdentifier() (any, error) {
+	return rpcIdentifierResponse{
+		Identifier:          ProviderID,
+		Identifiers:         []string{"aistudio2api", "aistudio", "google-aistudio"},
+		CredentialProviders: []string{"aistudio2api", "aistudio", "google-aistudio"},
+	}, nil
+}
+
+func (p *Plugin) handleQuotaDescribe() (any, error) {
+	return pluginapi.QuotaDescribeResponse{
+		SupportedProviders: []string{"aistudio2api", "aistudio", "google-aistudio"},
+		DisplayName:        "Google AI Studio (WAA)",
+		SupportsReset:      true,
+	}, nil
+}
+
+func (p *Plugin) handleQuotaFetch(raw []byte) (any, error) {
+	var req rpcQuotaFetchRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, err
+	}
+	rt, err := p.Runtime()
+	if err != nil {
+		return nil, err
+	}
+
+	accID := extractAccountIDFromAuth(req.StorageJSON, req.Metadata, req.Attributes)
+	statuses := rt.Pool().Status()
+	var matched *aistudio.AccountStatus
+	for i := range statuses {
+		if accID != "" && strings.EqualFold(statuses[i].ID, accID) {
+			matched = &statuses[i]
+			break
+		}
+	}
+	if matched == nil && len(statuses) > 0 {
+		matched = &statuses[0]
+	}
+
+	tierName := "FREE"
+	remaining := 1.0
+	resetTime := ""
+	desc := "Ready"
+	modelsCount := 0.0
+	if matched != nil {
+		if matched.BenefitTier != "" {
+			tierName = string(matched.BenefitTier)
+		}
+		modelsCount = float64(len(matched.Models))
+		desc = fmt.Sprintf("State: %s", matched.State)
+		if matched.State == aistudio.AccountCooldown || len(matched.Cooldowns) > 0 {
+			remaining = 0.0
+			for _, cd := range matched.Cooldowns {
+				if !cd.Until.IsZero() {
+					resetTime = cd.Until.Format(time.RFC3339)
+				}
+				if cd.Reason != "" {
+					desc = cd.Reason
+				}
+				break
+			}
+			if matched.Message != "" {
+				desc = matched.Message
+			}
+		} else if matched.State == aistudio.AccountAuthRequired || !matched.Enabled {
+			remaining = 0.0
+			if matched.Message != "" {
+				desc = matched.Message
+			}
+		}
+	}
+	return pluginapi.QuotaFetchResponse{
+		Subscription: &pluginapi.QuotaSubscription{
+			Plan:     "Google AI Studio",
+			TierName: tierName,
+			TierID:   strings.ToLower(tierName),
+		},
+		Summary: []pluginapi.QuotaMetric{
+			{Key: "accounts", Label: "Total Accounts", Value: float64(len(statuses)), Format: "number"},
+			{Key: "models", Label: "Available Models", Value: modelsCount, Format: "number"},
+		},
+		Groups: []pluginapi.QuotaGroup{
+			{
+				DisplayName: "AI Studio Quota",
+				Buckets: []pluginapi.QuotaBucket{
+					{
+						Window:            "current",
+						RemainingFraction: remaining,
+						ResetTime:         resetTime,
+						Description:       desc,
+					},
+				},
+			},
+		},
+	}, nil
+}
+
+func (p *Plugin) handleQuotaReset(raw []byte) (any, error) {
+	var req rpcQuotaResetRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, err
+	}
+	rt, err := p.Runtime()
+	if err != nil {
+		return nil, err
+	}
+
+	accID := extractAccountIDFromAuth(req.StorageJSON, req.Metadata, req.Attributes)
+	scope := ""
+	if accID != "" {
+		if err := rt.Admin.ClearCooldown(p.ctx, accID, scope); err != nil {
+			return pluginapi.QuotaResetResponse{
+				Success: false,
+				Message: err.Error(),
+			}, nil
+		}
+		return pluginapi.QuotaResetResponse{
+			Success: true,
+			Message: "Cleared AI Studio cooldowns for account " + accID,
+		}, nil
+	}
+
+	for _, st := range rt.Pool().Status() {
+		_ = rt.Admin.ClearCooldown(p.ctx, st.ID, scope)
+	}
+	return pluginapi.QuotaResetResponse{
+		Success: true,
+		Message: "Cleared AI Studio cooldowns for all accounts",
+	}, nil
+}

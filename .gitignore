@@ -1,0 +1,15 @@
+# Build artifacts & downloaded SpiderMonkey static libraries
+/dist/
+/spidermonkey/
+*.dylib
+*.so
+*.dll
+*.h
+*.zip
+checksums.txt
+
+# OS / Editor files
+.DS_Store
+.idea/
+.vscode/
+*.swp
