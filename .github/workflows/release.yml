@@ -124,11 +124,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd artifacts
-          sha256sum *.zip > checksums.txt
-          cat checksums.txt
-          RAW_TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          if gh release view "$RAW_TAG" >/dev/null 2>&1; then
-            gh release upload "$RAW_TAG" *.zip checksums.txt --clobber
+          if gh release view "$RAW_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$RAW_TAG" *.zip checksums.txt --clobber --repo "${{ github.repository }}"
+          else
+            gh release create "$RAW_TAG" *.zip checksums.txt --title "$RAW_TAG" --generate-notes --repo "${{ github.repository }}"
+          fi
           else
             gh release create "$RAW_TAG" *.zip checksums.txt --title "$RAW_TAG" --generate-notes
           fi
