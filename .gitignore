@@ -4,7 +4,7 @@
 *.dylib
 *.so
 *.dll
-*.h
+aistudio2api.h
 *.zip
 checksums.txt
 
