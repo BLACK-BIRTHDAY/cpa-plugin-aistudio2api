@@ -200,8 +200,8 @@ func (p *Plugin) handleRegister(raw []byte) (any, error) {
 					Name:        "waa_backend",
 					Type:        pluginapi.ConfigFieldTypeEnum,
 					Default:     "spidermonkey",
-					EnumValues:  []string{"spidermonkey", "camoufox"},
-					Description: "BotGuard WAA proof runtime engine (in-process SpiderMonkey VM or headless Camoufox)",
+					EnumValues:  []string{"spidermonkey"},
+					Description: "BotGuard WAA proof runtime engine (in-process SpiderMonkey VM)",
 				},
 				{
 					Name:        "data_dir",

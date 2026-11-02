@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v1.0.0)"
+        description: "Release tag (e.g. v1.0.1)"
         required: true
-        default: "v1.0.0"
+        default: "v1.0.1"
 
 permissions:
   contents: write
@@ -41,6 +41,11 @@ jobs:
             os: ubuntu-24.04
             ext: .so
             sm_platform: linux-amd64-gnu
+          - goos: linux
+            goarch: arm64
+            os: ubuntu-24.04
+            ext: .so
+            sm_platform: linux-arm64
           - goos: windows
             goarch: amd64
             os: ubuntu-24.04
@@ -56,6 +61,12 @@ jobs:
         with:
           go-version: stable
           check-latest: true
+
+      - name: Setup Zig 0.16.0 (Linux arm64 target)
+        if: matrix.goos == 'linux' && matrix.goarch == 'arm64'
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
 
       - name: Setup LLVM-MinGW (Windows target)
         if: matrix.goos == 'windows'
@@ -98,6 +109,10 @@ jobs:
             export CGO_CFLAGS="-mmacosx-version-min=12.0 -arch ${{ matrix.goarch == 'amd64' && 'x86_64' || 'arm64' }}"
             export CGO_CXXFLAGS="${CGO_CXXFLAGS} -mmacosx-version-min=12.0 -arch ${{ matrix.goarch == 'amd64' && 'x86_64' || 'arm64' }}"
             export CGO_LDFLAGS="${CGO_LDFLAGS} -mmacosx-version-min=12.0 -arch ${{ matrix.goarch == 'amd64' && 'x86_64' || 'arm64' }}"
+          fi
+          if [ "${{ matrix.goos }}" = "linux" ] && [ "${{ matrix.goarch }}" = "arm64" ]; then
+            export CC="zig cc -target aarch64-linux-gnu"
+            export CXX="zig c++ -target aarch64-linux-gnu"
           fi
           go build -trimpath -buildmode=c-shared -o "out/${LIB_NAME}" ./cmd/aistudio2api-plugin
           (cd out && zip -qr "../${ZIP_NAME}" "${LIB_NAME}")

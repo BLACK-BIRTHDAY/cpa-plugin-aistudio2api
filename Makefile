@@ -14,7 +14,7 @@ endif
 OUT_DIR := dist/plugins/$(GOOS)/$(GOARCH)
 OUT_FILE := $(OUT_DIR)/aistudio2api$(EXT)
 
-.PHONY: all spidermonkey build test sync-chrome install clean
+.PHONY: all spidermonkey build test install clean
 
 all: build
 
@@ -38,13 +38,6 @@ test: spidermonkey
 	go test -v ./internal/cpa/...
 
 
-sync-chrome:
-	mkdir -p ~/.aistudio2api/chrome-cache/Default
-	cp -f ~/Library/Application\ Support/Google/Chrome/Local\ State ~/.aistudio2api/chrome-cache/Local\ State
-	cp -f ~/Library/Application\ Support/Google/Chrome/Last\ Version ~/.aistudio2api/chrome-cache/Last\ Version 2>/dev/null || true
-	cp -f ~/Library/Application\ Support/Google/Chrome/Default/Preferences ~/.aistudio2api/chrome-cache/Default/Preferences
-	cp -f ~/Library/Application\ Support/Google/Chrome/Default/Web\ Data ~/.aistudio2api/chrome-cache/Default/Web\ Data 2>/dev/null || true
-	cp -f ~/Library/Application\ Support/Google/Chrome/Default/Cookies ~/.aistudio2api/chrome-cache/Default/Cookies 2>/dev/null || true
 install: build
 	cp -f $(OUT_FILE) "/Users/jianli/Library/Application Support/com.cpa.gui/cpa-core/plugins/darwin/arm64/aistudio2api.dylib"
 clean:

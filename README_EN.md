@@ -31,8 +31,8 @@
   5. `executor`: Synchronous & streaming generation, local SentencePiece + upstream `CountTokens`, and multimodal media handling.
   6. `request_lifecycle_plugin`: Tracks request completion and upstream status codes.
   7. `quota_provider`: Reports account benefit tiers, available model counts, and cooldown recovery timers in the CPA dashboard with one-click reset.
-  8. `command_line_plugin`: Adds `--aistudio2api-import-chrome` and `--aistudio2api-status` CLI flags.
-  9. `management_api` + Embedded Web Console (`/v0/resource/plugins/aistudio2api/accounts`): Single-button service start/stop toggle, Cookie/StorageState import, local Chrome profile 1-click import, cooldown management, and live logs.
+  8. `command_line_plugin`: Adds `--aistudio2api-status` CLI diagnostic flag.
+  9. `management_api` + Embedded Web Console (`/v0/resource/plugins/aistudio2api/accounts`): Single-button service start/stop toggle, Cookie/StorageState account import, cooldown management, and live logs.
 
 ---
 
@@ -60,10 +60,11 @@ Open the CLIProxyAPI Management Center (or EasyCLIProxyAPI desktop app), navigat
 
 ### Option 2: Download Prebuilt Binary from GitHub Releases
 1. Download the archive for your platform from [Releases](https://github.com/jianli9158/cpa-plugin-aistudio2api/releases):
-   - macOS Apple Silicon: `aistudio2api_1.0.0_darwin_arm64.zip`
-   - Linux x86_64: `aistudio2api_1.0.0_linux_amd64.zip`
-   - Linux ARM64: `aistudio2api_1.0.0_linux_arm64.zip`
-   - Windows x86_64: `aistudio2api_1.0.0_windows_amd64.zip`
+   - macOS Apple Silicon: `aistudio2api_1.0.1_darwin_arm64.zip`
+   - macOS Intel: `aistudio2api_1.0.1_darwin_amd64.zip`
+   - Linux x86_64: `aistudio2api_1.0.1_linux_amd64.zip`
+   - Linux ARM64: `aistudio2api_1.0.1_linux_arm64.zip`
+   - Windows x86_64: `aistudio2api_1.0.1_windows_amd64.zip`
 2. Extract the dynamic library (`aistudio2api.dylib` / `aistudio2api.so` / `aistudio2api.dll`) into CLIProxyAPI's plugin directory:
    ```text
    plugins/<goos>/<goarch>/aistudio2api.{dylib,so,dll}
@@ -112,7 +113,7 @@ plugins:
 
 | Field | Type | Default | Description |
 | :--- | :---: | :---: | :--- |
-| `waa_backend` | `enum` | `"spidermonkey"` | BotGuard WAA runtime engine (`"spidermonkey"` in-process VM recommended, or `"camoufox"`) |
+| `waa_backend` | `enum` | `"spidermonkey"` | BotGuard WAA runtime engine (in-process `"spidermonkey"` VM, no external browser needed) |
 | `data_dir` | `string` | `"~/.aistudio2api"` | Directory storing internal account state, WAA cache, and model catalogs (kept outside `~/.cli-proxy-api` so internal JSON files are not scanned as credentials) |
 | `proxy` | `string` | `""` | Optional upstream proxy URL (`http://`, `https://`, `socks5://`) for Google AI Studio traffic |
 | `warm_workers` | `int` | `2` | Number of pre-warmed WAA workers |
@@ -133,16 +134,7 @@ When CLIProxyAPI starts, the plugin **automatically starts and pre-warms** in th
 ### 1. Cookie / StorageState Import
 Paste a browser request Cookie header (containing `SAPISID` and `__Secure-1PSID`), a Cookie-Editor JSON array, or a Playwright `storage-state.json` document and click **Import Cookie / StorageState Account**.
 
-### 2. Local Chrome 1-Click Import
-Click **Scan Local Chrome Accounts** to discover and import Google accounts and OAuth Refresh Tokens from local Chrome profiles.
-- **Note for macOS 15+ (Sequoia / Tahoe) GUI Launchers**:  
-  If `cli-proxy-api` is launched as a background subprocess by a GUI app without TCC App Data access to `~/Library/Application Support/Google/Chrome`, run once in your terminal:
-  ```bash
-  make sync-chrome
-  ```
-  This caches the Chrome profile state and derived `v10.key` into `~/.aistudio2api/chrome-cache/` for instant, prompt-free import.
-
-### 3. API Request Examples
+### 2. API Request Examples
 
 ```bash
 # Playground channel model (gemini-3.8-flash)

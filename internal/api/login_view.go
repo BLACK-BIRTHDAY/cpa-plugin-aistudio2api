@@ -49,13 +49,7 @@ func (views *loginViews) acquire(id string) (*camoufoxnative.LiveView, func()) {
 
 // handleLoginView 把管理页登录窗口连接接到同 ID 的 LiveView，连接期间推送画面并转发输入
 func (s *server) handleLoginView(w http.ResponseWriter, r *http.Request) {
-	view, release := s.loginViews.acquire(r.PathValue("view"))
-	defer release()
-	connection, err := loginViewUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	_ = view.Serve(r.Context(), connection)
+	http.Error(w, "interactive browser login is disabled in plugin mode", http.StatusNotImplemented)
 }
 
 // loginView 返回登录请求使用的 LiveView；请求没有登录窗口 ID 或使用本机可见窗口时返回 nil

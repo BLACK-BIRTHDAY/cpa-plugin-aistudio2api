@@ -31,8 +31,8 @@
   5. `executor`：同步/流式生成、Token 计数（SentencePiece + 上游 `CountTokens`）与多模态媒体透传。
   6. `request_lifecycle_plugin`：跟踪请求完成度与状态码。
   7. `quota_provider`：在 CPA 控制台实时展示账户权益等级、可用模型数与冷却恢复倒计时，支持一键重置冷却。
-  8. `command_line_plugin`：扩展 `--aistudio2api-import-chrome` 与 `--aistudio2api-status` 命令行参数。
-  9. `management_api` + 内置控制台页面（`/v0/resource/plugins/aistudio2api/accounts`）：提供单按钮启停控制、Cookie/StorageState 导入、本机 Chrome 账号一键扫描导入、冷却清理与实时运行日志。
+  8. `command_line_plugin`：扩展 `--aistudio2api-status` 命令行诊断参数。
+  9. `management_api` + 内置控制台页面（`/v0/resource/plugins/aistudio2api/accounts`）：提供单按钮启停控制、Cookie/StorageState 账户导入、冷却清理与实时运行日志。
 
 ---
 
@@ -60,10 +60,11 @@ flowchart LR
 
 ### 方式二：从 GitHub Releases 下载预编译包
 1. 前往 [Releases](https://github.com/jianli9158/cpa-plugin-aistudio2api/releases) 下载对应平台的压缩包：
-   - macOS Apple Silicon: `aistudio2api_1.0.0_darwin_arm64.zip`
-   - Linux x86_64: `aistudio2api_1.0.0_linux_amd64.zip`
-   - Linux ARM64: `aistudio2api_1.0.0_linux_arm64.zip`
-   - Windows x86_64: `aistudio2api_1.0.0_windows_amd64.zip`
+   - macOS Apple Silicon: `aistudio2api_1.0.1_darwin_arm64.zip`
+   - macOS Intel: `aistudio2api_1.0.1_darwin_amd64.zip`
+   - Linux x86_64: `aistudio2api_1.0.1_linux_amd64.zip`
+   - Linux ARM64: `aistudio2api_1.0.1_linux_arm64.zip`
+   - Windows x86_64: `aistudio2api_1.0.1_windows_amd64.zip`
 2. 解压出动态库文件（`aistudio2api.dylib` / `aistudio2api.so` / `aistudio2api.dll`），放入 CLIProxyAPI 的插件目录：
    ```text
    plugins/<goos>/<goarch>/aistudio2api.{dylib,so,dll}
@@ -112,7 +113,7 @@ plugins:
 
 | 配置项 | 类型 | 默认值 | 说明 |
 | :--- | :---: | :---: | :--- |
-| `waa_backend` | `enum` | `"spidermonkey"` | BotGuard WAA 运行时后端（推荐 `"spidermonkey"` 进程内引擎，可选 `"camoufox"`） |
+| `waa_backend` | `enum` | `"spidermonkey"` | BotGuard WAA 运行时后端（固定为进程内 `"spidermonkey"` 引擎，无需外部浏览器） |
 | `data_dir` | `string` | `"~/.aistudio2api"` | 插件内部账户状态、WAA 缓存与模型目录存储路径（独立于 `~/.cli-proxy-api` 以避免内部 JSON 被宿主误扫） |
 | `proxy` | `string` | `""` | 访问 Google AI Studio 的上游代理（支持 `http://`、`https://`、`socks5://`） |
 | `warm_workers` | `int` | `2` | 常驻预热的 WAA Worker 数量 |
@@ -133,16 +134,7 @@ plugins:
 ### 1. Cookie / StorageState 导入
 在面板中粘贴包含 `SAPISID` 与 `__Secure-1PSID` 的浏览器请求头 Cookie 字符串、Cookie-Editor JSON 数组或 Playwright `storage-state.json` 内容，点击 **「导入 Cookie / StorageState 账户」**。
 
-### 2. 本机 Chrome 账号一键扫描导入
-点击面板上的 **「扫描本机 Chrome 账号一键导入」** 即可自动解密本机 Chrome 登录的 Google 账号及 OAuth Refresh Token。
-- **macOS 15+ (Sequoia / Tahoe) 后台进程无弹窗权限说明**：  
-  如果通过 GUI 启动器后台运行 `cli-proxy-api` 时因 macOS TCC 容器隔离无法直接读取 Chrome 目录，只需在终端执行一次：
-  ```bash
-  make sync-chrome
-  ```
-  即可将 Chrome 登录态与派生密钥安全缓存至 `~/.aistudio2api/chrome-cache/`，后续在 GUI 插件页面即可秒级扫描并导入。
-
-### 3. 调用示例
+### 2. 调用示例
 
 ```bash
 # 调用 Playground 通道模型 (gemini-3.8-flash)

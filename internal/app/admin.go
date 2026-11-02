@@ -8,10 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
-	"slices"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
@@ -103,10 +101,7 @@ func (admin *runtimeAdmin) Status(context.Context) (api.AdminStatus, error) {
 		Version:        buildVersion(),
 		ActiveRequests: admin.requests.count(),
 		Accounts:       counts,
-		Camoufox:       api.AdminCamoufox{Ready: camoufoxnative.Installed()},
-	}
-	if download, ok := camoufoxnative.DownloadProgress(); ok {
-		status.Camoufox.Download = &download
+		Camoufox:       api.AdminCamoufox{Ready: true},
 	}
 	return status, nil
 }
@@ -176,75 +171,12 @@ func (admin *runtimeAdmin) CreateAccount(ctx context.Context, input api.AccountC
 }
 
 func (admin *runtimeAdmin) ChromeImportProfiles(context.Context) ([]api.ChromeImportProfile, error) {
-	root, err := chromeauth.DefaultChromeRoot()
-	if err != nil {
-		return nil, err
-	}
-	accounts, err := chromeauth.Discover(root)
-	if err != nil {
-		return nil, err
-	}
-	existing := admin.accountIDs()
-	profiles := make([]api.ChromeImportProfile, 0, len(accounts))
-	for _, account := range accounts {
-		email := strings.ToLower(strings.TrimSpace(account.Email))
-		if !account.Importable || email == "" {
-			continue
-		}
-		if _, exists := existing[email]; exists {
-			continue
-		}
-		existing[email] = struct{}{}
-		profiles = append(profiles, api.ChromeImportProfile{
-			ID: account.ID, Profile: account.Profile, DisplayName: account.DisplayName, Email: email, Locale: account.Locale,
-		})
-	}
-	return profiles, nil
+	return []api.ChromeImportProfile{}, nil
 }
 
-// CookieBrowsers 列出本机开启远程调试的浏览器，读取其 Cookie 并识别其中各会话登录 AI Studio 的账户，每个账户一项
-func (admin *runtimeAdmin) CookieBrowsers(ctx context.Context) ([]api.CookieBrowser, error) {
-	addresses, err := chromeauth.DebugAddresses(ctx)
-	if err != nil {
-		return nil, err
-	}
-	existing := admin.accountIDs()
-	browsers := make([][]api.CookieBrowser, len(addresses))
-	var group sync.WaitGroup
-	for index, address := range addresses {
-		group.Go(func() {
-			browser := api.CookieBrowser{Address: address}
-			name, err := chromeauth.DebugBrowserName(ctx, address)
-			if err != nil {
-				browser.Error = err.Error()
-				browsers[index] = []api.CookieBrowser{browser}
-				return
-			}
-			browser.Browser = name
-			accounts, err := admin.readCookieBrowser(ctx, &browser)
-			browser.SignedOut = errors.Is(err, chromeauth.ErrSignedOut) || errors.Is(err, aistudio.ErrLoginCookieMissing)
-			if err != nil && !browser.SignedOut {
-				browser.Error = err.Error()
-			}
-			browsers[index] = cookieAccountEntries(browser, accounts, existing)
-		})
-	}
-	group.Wait()
-	return append([]api.CookieBrowser{}, slices.Concat(browsers...)...), nil
-}
-
-// readCookieBrowser 读取调试浏览器的语言、时区与 Cookie，返回其中各会话登录 AI Studio 的账户
-func (admin *runtimeAdmin) readCookieBrowser(ctx context.Context, browser *api.CookieBrowser) ([]chromeauth.CookieAccount, error) {
-	source, err := chromeauth.ReadCDPBrowser(ctx, browser.Address)
-	if err != nil {
-		return nil, err
-	}
-	browser.Locale, browser.Timezone = source.Locale, source.Timezone
-	state, err := aistudio.ParseCookieText(source.Cookies)
-	if err != nil {
-		return nil, err
-	}
-	return chromeauth.DiscoverCookieAccounts(ctx, &state, admin.effectiveProxy(""))
+// CookieBrowsers 返回空列表（插件模式不扫描本机浏览器进程）
+func (admin *runtimeAdmin) CookieBrowsers(context.Context) ([]api.CookieBrowser, error) {
+	return []api.CookieBrowser{}, nil
 }
 
 // DiscoverCookieAccounts 解析粘贴的 Cookie，返回其中各会话登录 AI Studio 的账户
@@ -290,57 +222,8 @@ func (admin *runtimeAdmin) accountIDs() map[string]struct{} {
 	return existing
 }
 
-func (admin *runtimeAdmin) ImportChromeAccounts(ctx context.Context, input api.ChromeImportInput) ([]api.AdminAccount, error) {
-	if len(input.AccountIDs) == 0 {
-		return nil, invalidAccount(fmt.Errorf("未选择 Chrome 账号"))
-	}
-	root, err := chromeauth.DefaultChromeRoot()
-	if err != nil {
-		return nil, err
-	}
-	accountProxy := strings.TrimSpace(input.Proxy)
-	results, err := chromeauth.Import(ctx, chromeauth.ImportOptions{
-		ChromeRoot: root, Proxy: admin.effectiveProxy(accountProxy), AccountIDs: input.AccountIDs,
-	})
-	if err != nil {
-		return nil, err
-	}
-	configs := make([]aistudio.AccountConfig, len(results))
-	seen := make(map[string]struct{}, len(results))
-	for index, result := range results {
-		email := strings.ToLower(strings.TrimSpace(result.Email))
-		if _, exists := seen[email]; exists {
-			return nil, invalidAccount(fmt.Errorf("Chrome 账号重复: %s", email))
-		}
-		seen[email] = struct{}{}
-		accountConfig := aistudio.DefaultAccountConfig(email)
-		accountConfig.Proxy = accountProxy
-		if locale := strings.TrimSpace(input.Locale); locale != "" {
-			accountConfig.Locale = locale
-		} else if locale := strings.TrimSpace(result.Locale); locale != "" {
-			accountConfig.Locale = locale
-		}
-		if timezone := strings.TrimSpace(input.Timezone); timezone != "" {
-			accountConfig.Timezone = timezone
-		}
-		if err := accountConfig.Validate(); err != nil {
-			return nil, invalidAccount(err)
-		}
-		if _, err := aistudio.NewSigner().Authorization(result.State); err != nil {
-			return nil, fmt.Errorf("认证状态无法用于 AI Studio: %w", err)
-		}
-		configs[index] = accountConfig
-	}
-	accounts := make([]api.AdminAccount, 0, len(results))
-	for index, result := range results {
-		account, err := admin.addAccount(ctx, configs[index], result.State, "")
-		if err != nil {
-			return nil, err
-		}
-		accounts = append(accounts, account)
-		admin.requests.log("auth", "INFO", "Chrome 账户已导入 | 账户="+account.Label)
-	}
-	return accounts, nil
+func (admin *runtimeAdmin) ImportChromeAccounts(context.Context, api.ChromeImportInput) ([]api.AdminAccount, error) {
+	return nil, invalidAccount(fmt.Errorf("插件模式不支持读取本机浏览器，请粘贴 Cookie 或 StorageState 导入"))
 }
 
 // ImportAccountState 导入远程配对上传或 Cookie 导入的认证状态与 Camoufox 指纹，未给标签时以 Cookie 中第 auth_user 个会话登录的账户邮箱为标签
@@ -876,7 +759,7 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 		NonstreamKeepalive:   value.NonstreamKeepalive, FakeStream: value.FakeStream, YouTubeLinks: value.YouTubeLinks,
 		SearchModelAliases: value.SearchModelAliases, GoogleSearch: value.GoogleSearch,
 		ContinuationRewrite: value.ContinuationRewrite, ContinuationPrompt: strings.TrimSpace(value.ContinuationPrompt),
-		FirstEventHedge: strings.ToLower(strings.TrimSpace(value.FirstEventHedge)), AuthStates: value.AuthStates, ListenAddr: value.ListenAddr, PreviewListenAddr: value.PreviewListenAddr,
+		FirstEventHedge: strings.ToLower(strings.TrimSpace(value.FirstEventHedge)), FirstEventHedgeModels: strings.TrimSpace(value.FirstEventHedgeModels), AuthStates: value.AuthStates, ListenAddr: value.ListenAddr, PreviewListenAddr: value.PreviewListenAddr,
 		ProxyAPIKey: value.APIKey, Proxy: value.Proxy, InitTimeout: initTimeout, RequestTimeout: requestTimeout,
 		WarmWorkerLimit: value.WarmWorkerLimit, MaxActiveWorkers: value.MaxActiveWorkers,
 		WarmStartupConcurrency: value.WarmStartupConcurrency,
@@ -885,11 +768,12 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 		UpstreamChannels:       value.UpstreamChannels,
 		ModelMapping:           strings.TrimSpace(value.ModelMapping),
 		ModelChannels:          strings.TrimSpace(value.ModelChannels),
+		APIKeyAccounts:         strings.TrimSpace(value.APIKeyAccounts),
 		TemporaryChat:          value.TemporaryChat,
 		WAABackend:             value.WAABackend,
 		MediaOutput:            strings.ToLower(strings.TrimSpace(value.MediaOutput)),
 		MediaBaseURL:           strings.TrimSpace(value.MediaBaseURL),
-	}
+	}.KeepEnvironment(saved)
 	if err := cfg.Validate(); err != nil {
 		return api.RuntimeConfig{}, invalidConfigError(err)
 	}
@@ -1174,7 +1058,7 @@ func runtimeConfigDTO(cfg config.Config) api.RuntimeConfig {
 		NonstreamKeepalive:   cfg.NonstreamKeepalive, FakeStream: cfg.FakeStream, YouTubeLinks: cfg.YouTubeLinks,
 		SearchModelAliases: cfg.SearchModelAliases, GoogleSearch: cfg.GoogleSearch,
 		ContinuationRewrite: cfg.ContinuationRewrite, ContinuationPrompt: cfg.ContinuationPrompt,
-		FirstEventHedge: cfg.FirstEventHedge, AuthStates: cfg.AuthStates, ListenAddr: cfg.ListenAddr, APIKey: cfg.ProxyAPIKey,
+		FirstEventHedge: cfg.FirstEventHedge, FirstEventHedgeModels: cfg.FirstEventHedgeModels, AuthStates: cfg.AuthStates, ListenAddr: cfg.ListenAddr, APIKey: cfg.ProxyAPIKey,
 		ActiveListenAddr: cfg.ListenAddr, ActiveAPIKey: cfg.ProxyAPIKey,
 		PreviewListenAddr: cfg.PreviewListenAddr, ActivePreviewListenAddr: cfg.PreviewListenAddr,
 		Proxy: cfg.Proxy, InitTimeout: cfg.InitTimeout.String(), RequestTimeout: cfg.RequestTimeout.String(),
@@ -1185,11 +1069,23 @@ func runtimeConfigDTO(cfg config.Config) api.RuntimeConfig {
 		UpstreamChannels:       cfg.UpstreamChannels,
 		ModelMapping:           cfg.ModelMapping,
 		ModelChannels:          cfg.ModelChannels,
+		APIKeyAccounts:         cfg.APIKeyAccounts,
 		TemporaryChat:          cfg.TemporaryChat,
 		WAABackend:             cfg.WAABackend,
 		MediaOutput:            cfg.MediaOutput,
 		MediaBaseURL:           cfg.MediaBaseURL,
+		Environment:            append([]string{}, cfg.Environment...),
+		Invalid:                invalidConfigDTO(cfg.Invalid),
 	}
+}
+
+// invalidConfigDTO 把加载时无效的配置项转为管理接口的表示
+func invalidConfigDTO(values []config.InvalidValue) []api.InvalidConfigValue {
+	result := make([]api.InvalidConfigValue, 0, len(values))
+	for _, value := range values {
+		result = append(result, api.InvalidConfigValue{Key: value.Key, Value: value.Value, Reason: value.Reason})
+	}
+	return result
 }
 
 var _ generationAdmin = (*runtimeAdmin)(nil)

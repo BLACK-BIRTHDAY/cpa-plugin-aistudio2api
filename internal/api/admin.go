@@ -9,7 +9,6 @@ import (
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 	"github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative"
-	"github.com/Mag1cFall/AIStudio2API/internal/chromeauth"
 	"github.com/Mag1cFall/AIStudio2API/internal/i18n"
 )
 
@@ -52,6 +51,13 @@ type AdminStatus struct {
 	ActiveRequests int                `json:"active_requests"`
 	Accounts       AdminAccountCounts `json:"accounts"`
 	Camoufox       AdminCamoufox      `json:"camoufox"`
+}
+
+// InvalidConfigValue 表示加载时取值无效、按默认值生效的一个配置项
+type InvalidConfigValue struct {
+	Key    string `json:"key"`
+	Value  string `json:"value"`
+	Reason string `json:"reason"`
 }
 
 // AdminCamoufox 表示 Camoufox 是否就绪与正在进行的下载
@@ -242,51 +248,55 @@ type ChromeImportInput struct {
 
 // RuntimeConfig 表示全局运行配置
 type RuntimeConfig struct {
-	AutoStart                 bool         `json:"auto_start"`
-	RequestBodyLog            bool         `json:"request_body_log"`
-	AdminAuthEnabled          bool         `json:"admin_auth_enabled"`
-	AdminUsername             string       `json:"admin_username"`
-	AdminPassword             *string      `json:"admin_password,omitempty"`
-	AdminPasswordSet          bool         `json:"admin_password_set"`
-	SavedAdminPassword        string       `json:"-"`
-	BuildNativeNonstream      bool         `json:"build_native_nonstream"`
-	NonstreamKeepalive        bool         `json:"nonstream_keepalive"`
-	FakeStream                bool         `json:"fake_stream"`
-	YouTubeLinks              bool         `json:"youtube_links"`
-	SearchModelAliases        bool         `json:"search_model_aliases"`
-	GoogleSearch              bool         `json:"google_search"`
-	FirstEventHedge           string       `json:"first_event_hedge"`
-	ContinuationRewrite       bool         `json:"continuation_rewrite"`
-	ContinuationPrompt        string       `json:"continuation_prompt"`
-	LogFile                   bool         `json:"log_file"`
-	LogMaxTotalMB             int          `json:"log_max_total_mb"`
-	AuthStates                string       `json:"auth_states"`
-	ListenAddr                string       `json:"listen_addr"`
-	APIKey                    string       `json:"proxy_api_key"`
-	ActiveListenAddr          string       `json:"active_listen_addr"`
-	ReservedListenAddr        string       `json:"reserved_listen_addr"`
-	PreviewListenAddr         string       `json:"preview_listen_addr"`
-	ActivePreviewListenAddr   string       `json:"active_preview_listen_addr"`
-	ActiveAPIKey              string       `json:"active_proxy_api_key"`
-	ManagementRestartRequired bool         `json:"management_restart_required"`
-	ServiceRestartRequired    bool         `json:"service_restart_required"`
-	Proxy                     string       `json:"proxy"`
-	ActiveProxy               string       `json:"active_proxy"`
-	ProxyPool                 []AdminProxy `json:"proxy_pool"`
-	InitTimeout               string       `json:"init_timeout"`
-	RequestTimeout            string       `json:"request_timeout"`
-	WarmWorkerLimit           int          `json:"warm_worker_limit"`
-	MaxActiveWorkers          int          `json:"max_active_workers"`
-	WarmStartupConcurrency    int          `json:"warm_startup_concurrency"`
-	PerAccountConcurrency     int          `json:"per_account_concurrency"`
-	RoutingStrategy           string       `json:"routing_strategy"`
-	UpstreamChannels          []string     `json:"upstream_channels"`
-	ModelMapping              string       `json:"model_mapping"`
-	ModelChannels             string       `json:"model_channels"`
-	TemporaryChat             bool         `json:"temporary_chat"`
-	WAABackend                string       `json:"waa_backend"`
-	MediaOutput               string       `json:"media_output"`
-	MediaBaseURL              string       `json:"media_base_url"`
+	AutoStart                 bool                 `json:"auto_start"`
+	RequestBodyLog            bool                 `json:"request_body_log"`
+	AdminAuthEnabled          bool                 `json:"admin_auth_enabled"`
+	AdminUsername             string               `json:"admin_username"`
+	AdminPassword             *string              `json:"admin_password,omitempty"`
+	AdminPasswordSet          bool                 `json:"admin_password_set"`
+	SavedAdminPassword        string               `json:"-"`
+	BuildNativeNonstream      bool                 `json:"build_native_nonstream"`
+	NonstreamKeepalive        bool                 `json:"nonstream_keepalive"`
+	FakeStream                bool                 `json:"fake_stream"`
+	YouTubeLinks              bool                 `json:"youtube_links"`
+	SearchModelAliases        bool                 `json:"search_model_aliases"`
+	GoogleSearch              bool                 `json:"google_search"`
+	FirstEventHedge           string               `json:"first_event_hedge"`
+	FirstEventHedgeModels     string               `json:"first_event_hedge_models"`
+	ContinuationRewrite       bool                 `json:"continuation_rewrite"`
+	ContinuationPrompt        string               `json:"continuation_prompt"`
+	LogFile                   bool                 `json:"log_file"`
+	LogMaxTotalMB             int                  `json:"log_max_total_mb"`
+	AuthStates                string               `json:"auth_states"`
+	ListenAddr                string               `json:"listen_addr"`
+	APIKey                    string               `json:"proxy_api_key"`
+	ActiveListenAddr          string               `json:"active_listen_addr"`
+	ReservedListenAddr        string               `json:"reserved_listen_addr"`
+	PreviewListenAddr         string               `json:"preview_listen_addr"`
+	ActivePreviewListenAddr   string               `json:"active_preview_listen_addr"`
+	ActiveAPIKey              string               `json:"active_proxy_api_key"`
+	ManagementRestartRequired bool                 `json:"management_restart_required"`
+	ServiceRestartRequired    bool                 `json:"service_restart_required"`
+	Proxy                     string               `json:"proxy"`
+	ActiveProxy               string               `json:"active_proxy"`
+	ProxyPool                 []AdminProxy         `json:"proxy_pool"`
+	InitTimeout               string               `json:"init_timeout"`
+	RequestTimeout            string               `json:"request_timeout"`
+	WarmWorkerLimit           int                  `json:"warm_worker_limit"`
+	MaxActiveWorkers          int                  `json:"max_active_workers"`
+	WarmStartupConcurrency    int                  `json:"warm_startup_concurrency"`
+	PerAccountConcurrency     int                  `json:"per_account_concurrency"`
+	RoutingStrategy           string               `json:"routing_strategy"`
+	UpstreamChannels          []string             `json:"upstream_channels"`
+	ModelMapping              string               `json:"model_mapping"`
+	ModelChannels             string               `json:"model_channels"`
+	APIKeyAccounts            string               `json:"api_key_accounts"`
+	TemporaryChat             bool                 `json:"temporary_chat"`
+	WAABackend                string               `json:"waa_backend"`
+	MediaOutput               string               `json:"media_output"`
+	MediaBaseURL              string               `json:"media_base_url"`
+	Environment               []string             `json:"environment"`
+	Invalid                   []InvalidConfigValue `json:"invalid"`
 }
 
 // AdminCooldown 表示账户模型冷却
@@ -447,19 +457,9 @@ func (s *server) handleImportCookieAccount(w http.ResponseWriter, r *http.Reques
 		writeAdminError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	if address := strings.TrimSpace(input.CDP); address != "" {
-		browser, err := chromeauth.ReadCDPBrowser(r.Context(), address)
-		if err != nil {
-			writeAdminError(w, http.StatusBadGateway, "cdp_unavailable", err.Error())
-			return
-		}
-		input.Cookies = browser.Cookies
-		if strings.TrimSpace(input.Locale) == "" {
-			input.Locale = browser.Locale
-		}
-		if strings.TrimSpace(input.Timezone) == "" {
-			input.Timezone = browser.Timezone
-		}
+	if strings.TrimSpace(input.CDP) != "" {
+		writeAdminError(w, http.StatusBadRequest, "cdp_unavailable", "CDP browser import is disabled in plugin mode")
+		return
 	}
 	state, err := aistudio.ParseCookieText(input.Cookies)
 	if err != nil {

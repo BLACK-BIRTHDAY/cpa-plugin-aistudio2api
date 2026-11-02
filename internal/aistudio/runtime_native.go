@@ -25,24 +25,9 @@ type NativeWorker struct {
 var _ ProtectedPreparer = (*NativeWorker)(nil)
 var _ ProtocolHeaderProvider = (*NativeWorker)(nil)
 
-// NewNativeWorker 启动单个账户的 Camoufox WAA runtime
+// NewNativeWorker 启动单个账户的 WAA runtime（插件内统一使用进程内 SpiderMonkey）
 func NewNativeWorker(ctx context.Context, accountID string, options camoufoxnative.Options) (*NativeWorker, error) {
-	runtime, err := camoufoxnative.Start(ctx, options)
-	if err != nil {
-		return nil, err
-	}
-	runtimeState := runtime.State()
-	return &NativeWorker{
-		accountID: accountID,
-		runtime:   runtime,
-		state: WorkerState{
-			AccountID: accountID,
-			Phase:     WorkerReady,
-			PID:       runtimeState.PID,
-			RuntimeID: "native-webdriver-bidi",
-			PageURL:   runtimeState.PageURL,
-		},
-	}, nil
+	return NewSpiderMonkeyWorker(ctx, accountID, options)
 }
 
 // Prepare 生成 fresh proof 并写入请求指定的 WAA field

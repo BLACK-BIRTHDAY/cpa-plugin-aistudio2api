@@ -177,16 +177,12 @@ const webUIDashboardHTML = `<!DOCTYPE html>
     <div class="row">
       <textarea id="accCookies" rows="4" style="width:100%; font-family:monospace;" placeholder="粘贴浏览器请求头 Cookie (需包含 SAPISID 与 __Secure-1PSID)、Cookie-Editor JSON 数组、或 Playwright storage-state.json 内容..."></textarea>
     </div>
-    <div class="row" style="justify-content: space-between;">
+    <div class="row">
       <div style="display:flex; gap:8px;">
         <button onclick="importCookieAccount()">导入 Cookie / StorageState 账户</button>
         <button class="secondary" onclick="discoverCookieAccounts()">预览 Cookie 内登录的谷歌账号</button>
       </div>
-      <div style="display:flex; gap:8px;">
-        <button class="secondary" onclick="loadChromeProfiles()">扫描本机 Chrome 账号一键导入</button>
-      </div>
     </div>
-    <div id="chromeProfilesBox" style="display:none; margin-top:12px; padding-top:12px; border-top:1px solid var(--border);"></div>
   </div>
 
   <div class="card">
@@ -414,39 +410,6 @@ async function discoverCookieAccounts() {
     showToast('识别到账号: ' + (list || '无'), false);
   } catch (e) {
     showToast('识别失败: ' + e.message, true);
-  }
-}
-
-async function loadChromeProfiles() {
-  const box = document.getElementById('chromeProfilesBox');
-  box.style.display = 'block';
-  box.innerHTML = '正在扫描本机 Chrome Profile...';
-  try {
-    const res = await apiCall('/v0/management/aistudio2api/chrome-profiles');
-    const profiles = res.profiles || [];
-    if (!profiles.length) {
-      box.innerHTML = '<span style="color:var(--muted);">未发现可导入的新 Chrome Profile 账号</span>';
-      return;
-    }
-    box.innerHTML = profiles.map(p =>
-      '<button class="secondary" style="margin-right:8px; margin-bottom:6px;" onclick="importChromeProfile(\'' + escapeJs(p.id) + '\')">导入 ' +
-      escapeHtml(p.email + ' (' + p.profile + ')') + '</button>'
-    ).join('');
-  } catch (e) {
-    box.innerHTML = '<span style="color:#f87171;">扫描失败: ' + escapeHtml(e.message) + '</span>';
-  }
-}
-
-async function importChromeProfile(id) {
-  const proxy = document.getElementById('accProxy').value.trim();
-  try {
-    showToast('正在从 Chrome 导入账号...', false);
-    await apiCall('/v0/management/aistudio2api/accounts/import-chrome', 'POST', { account_ids: [id], proxy });
-    showToast('Chrome 账号导入成功', false);
-    loadChromeProfiles();
-    loadStatus();
-  } catch (e) {
-    showToast('Chrome 导入失败: ' + e.message, true);
   }
 }
 

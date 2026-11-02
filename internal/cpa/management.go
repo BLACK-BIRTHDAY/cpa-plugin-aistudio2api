@@ -25,12 +25,6 @@ func (p *Plugin) handleCLIRegister() (any, error) {
 	return pluginapi.CommandLineRegistrationResponse{
 		Flags: []pluginapi.CommandLineFlag{
 			{
-				Name:         "aistudio2api-import-chrome",
-				Type:         "bool",
-				DefaultValue: "false",
-				Usage:        "Discover and import local Chrome profiles into AIStudio2API",
-			},
-			{
 				Name:         "aistudio2api-status",
 				Type:         "bool",
 				DefaultValue: "false",
@@ -50,45 +44,6 @@ func (p *Plugin) handleCLIRun(raw []byte) (any, error) {
 		return pluginapi.CommandLineExecutionResponse{
 			ExitCode: 1,
 			Stderr:   []byte("Failed to initialize AIStudio2API runtime: " + err.Error() + "\n"),
-		}, nil
-	}
-
-	if flag, ok := req.TriggeredFlags["aistudio2api-import-chrome"]; ok && flag.Set && strings.EqualFold(flag.Value, "true") {
-		profiles, err := rt.Admin.ChromeImportProfiles(p.ctx)
-		if err != nil {
-			return pluginapi.CommandLineExecutionResponse{
-				ExitCode: 1,
-				Stderr:   []byte("Chrome discovery failed: " + err.Error() + "\n"),
-			}, nil
-		}
-		if len(profiles) == 0 {
-			return pluginapi.CommandLineExecutionResponse{
-				ExitCode: 0,
-				Stdout:   []byte("No new importable Chrome profiles found.\n"),
-			}, nil
-		}
-		ids := make([]string, 0, len(profiles))
-		for _, prof := range profiles {
-			ids = append(ids, prof.ID)
-		}
-		imported, err := rt.Admin.ImportChromeAccounts(p.ctx, api.ChromeImportInput{AccountIDs: ids})
-		if err != nil {
-			return pluginapi.CommandLineExecutionResponse{
-				ExitCode: 1,
-				Stderr:   []byte("Chrome import failed: " + err.Error() + "\n"),
-			}, nil
-		}
-		var auths []pluginapi.AuthData
-		for _, acc := range imported {
-			if ad, err := p.buildAuthDataForAccount(rt, acc); err == nil {
-				auths = append(auths, ad)
-			}
-		}
-		out, _ := json.MarshalIndent(imported, "", "  ")
-		return pluginapi.CommandLineExecutionResponse{
-			ExitCode: 0,
-			Stdout:   []byte(fmt.Sprintf("Imported %d Chrome account(s):\n%s\n", len(imported), string(out))),
-			Auths:    auths,
 		}, nil
 	}
 
@@ -117,9 +72,6 @@ func (p *Plugin) handleManagementRegister() (any, error) {
 			{Method: http.MethodGet, Path: "/v0/management/aistudio2api/accounts", Description: "List AIStudio2API accounts"},
 			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/accounts", Description: "Import AIStudio2API account from Cookie header or StorageState JSON"},
 			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/accounts/discover-cookies", Description: "Discover Google accounts inside pasted Cookie text"},
-			{Method: http.MethodGet, Path: "/v0/management/aistudio2api/chrome-profiles", Description: "List importable local Chrome profiles"},
-			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/accounts/import-chrome", Description: "Import selected local Chrome profiles"},
-			{Method: http.MethodGet, Path: "/v0/management/aistudio2api/cookie-browsers", Description: "List local remote-debugging browsers"},
 			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/accounts/refresh", Description: "Refresh an account's model catalog and benefit tier"},
 			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/accounts/update", Description: "Update account settings (enabled, proxy, locale, timezone)"},
 			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/accounts/delete", Description: "Delete an account"},
@@ -266,35 +218,6 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		_ = p.SyncAccountToHostAuth(req.HostCallbackID, created)
 		go func() { _ = rt.EnsureRunning(p.ctx) }()
 		return jsonManagementResponse(http.StatusCreated, map[string]any{"account": created}), nil
-
-	case method == http.MethodGet && path == "/v0/management/aistudio2api/chrome-profiles":
-		profiles, err := rt.Admin.ChromeImportProfiles(p.ctx)
-		if err != nil {
-			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
-		}
-		return jsonManagementResponse(http.StatusOK, map[string]any{"profiles": profiles}), nil
-
-	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/import-chrome":
-		var input api.ChromeImportInput
-		if err := json.Unmarshal(req.Body, &input); err != nil {
-			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
-		}
-		imported, err := rt.Admin.ImportChromeAccounts(p.ctx, input)
-		if err != nil {
-			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
-		}
-		for _, acc := range imported {
-			_ = p.SyncAccountToHostAuth(req.HostCallbackID, acc)
-		}
-		go func() { _ = rt.EnsureRunning(p.ctx) }()
-		return jsonManagementResponse(http.StatusOK, map[string]any{"accounts": imported}), nil
-
-	case method == http.MethodGet && path == "/v0/management/aistudio2api/cookie-browsers":
-		browsers, err := rt.Admin.CookieBrowsers(p.ctx)
-		if err != nil {
-			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
-		}
-		return jsonManagementResponse(http.StatusOK, map[string]any{"browsers": browsers}), nil
 
 	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/refresh":
 		var body struct {

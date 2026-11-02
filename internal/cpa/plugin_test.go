@@ -197,20 +197,6 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 		t.Fatalf("unexpected status response: %s", string(statusResp.Body))
 	}
 
-	chromeReq, _ := json.Marshal(pluginapi.ManagementRequest{
-		Method: http.MethodGet,
-		Path:   "/v0/management/aistudio2api/chrome-profiles",
-	})
-	chromeRes, err := p.HandleMethod(pluginabi.MethodManagementHandle, chromeReq)
-	if err != nil {
-		t.Fatalf("management.handle chrome-profiles failed: %v", err)
-	}
-	chromeResp := chromeRes.(pluginapi.ManagementResponse)
-	if chromeResp.StatusCode != http.StatusOK {
-		t.Fatalf("unexpected chrome-profiles status=%d body=%s", chromeResp.StatusCode, string(chromeResp.Body))
-	}
-	t.Logf("macOS chrome-profiles discovered: %s", string(chromeResp.Body))
-
 }
 
 func TestSpiderMonkeyBotGuardVMIntegration(t *testing.T) {

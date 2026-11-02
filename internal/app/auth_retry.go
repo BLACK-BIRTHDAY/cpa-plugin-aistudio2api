@@ -157,62 +157,23 @@ func newAuthRuntimeRefresher(
 ) *authRuntimeRefresher {
 	return &authRuntimeRefresher{
 		pool:    workers.pool,
-		refresh: chromeauth.Refresh, importCurrent: importCurrentChromeState, chromeHas: chromeIdentityImportable,
+		refresh: unsupportedChromeRefresh, importCurrent: importCurrentChromeState, chromeHas: chromeIdentityImportable,
 		reset: workers.Reset, prepareWorker: workers.prepareUpdate, prepareHeaders: headers.prepareInvalidate,
 		globalProxy: globalProxy,
 		requests:    requests,
 	}
 }
 
-// chromeIdentityImportable 判断本机 Chrome 是否登录着该邮箱且材料可导入
-func chromeIdentityImportable(email string) bool {
-	root, err := chromeauth.DefaultChromeRoot()
-	if err != nil {
-		return false
-	}
-	accounts, err := chromeauth.Discover(root)
-	if err != nil {
-		return false
-	}
-	for _, account := range accounts {
-		if account.Importable && strings.EqualFold(account.Email, email) {
-			return true
-		}
-	}
+func unsupportedChromeRefresh(context.Context, aistudio.AuthSource, aistudio.ChromeOAuthMaterial, string) ([]aistudio.StateCookie, error) {
+	return nil, chromeauth.ErrCredentialsRejected
+}
+
+func chromeIdentityImportable(string) bool {
 	return false
 }
 
-// importCurrentChromeState 从原来源中更新同一 Google 账户的认证材料
-func importCurrentChromeState(ctx context.Context, source aistudio.AuthSource, material *aistudio.ChromeOAuthMaterial, proxy string) (aistudio.StorageState, error) {
-	root, err := chromeauth.DefaultChromeRoot()
-	if err != nil {
-		return aistudio.StorageState{}, err
-	}
-	accounts, err := chromeauth.Discover(root)
-	if err != nil {
-		return aistudio.StorageState{}, err
-	}
-	var selected string
-	for _, account := range accounts {
-		if !account.Importable || !strings.EqualFold(account.Email, source.Email) || material != nil && account.GaiaID != material.GaiaID {
-			continue
-		}
-		selected = account.ID
-		if account.Profile == source.Profile {
-			break
-		}
-	}
-	if selected == "" {
-		return aistudio.StorageState{}, fmt.Errorf("Chrome 中没有可更新的原账户 %s", source.Email)
-	}
-	results, err := chromeauth.Import(ctx, chromeauth.ImportOptions{ChromeRoot: root, Proxy: proxy, AccountIDs: []string{selected}})
-	if err != nil {
-		return aistudio.StorageState{}, err
-	}
-	if len(results) != 1 || !strings.EqualFold(results[0].Email, source.Email) {
-		return aistudio.StorageState{}, fmt.Errorf("Chrome 更新账户与原账户不匹配")
-	}
-	return results[0].State, nil
+func importCurrentChromeState(_ context.Context, source aistudio.AuthSource, _ *aistudio.ChromeOAuthMaterial, _ string) (aistudio.StorageState, error) {
+	return aistudio.StorageState{}, fmt.Errorf("请通过粘贴 Cookie 更新账户 %s 的登录状态", source.Email)
 }
 
 // markAuthenticationRequired 发布当前认证版本号的账户状态

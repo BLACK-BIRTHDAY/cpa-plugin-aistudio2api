@@ -25,6 +25,9 @@ const maxCookieAuthUsers = 10
 // ErrSignedOut 表示 Cookie 打开 AI Studio 时被转到登录页
 var ErrSignedOut = errors.New("Cookie 未登录 AI Studio 或已失效")
 
+// ErrCredentialsRejected 表示保存的 OAuth 续签材料已失效
+var ErrCredentialsRejected = errors.New("OAuth 续签材料失效")
+
 // accountEmailPattern 匹配 AI Studio 页面全局数据中当前登录账户的邮箱
 var accountEmailPattern = regexp.MustCompile(`"oPEP7c":("(?:[^"\\]|\\.)*")`)
 
