@@ -307,14 +307,14 @@ func (p *Plugin) handleAuthLoginStart(raw []byte) (any, error) {
 	}
 	p.loginStateMu.Unlock()
 
-	loginURL := "/v0/resource/plugins/aistudio2api/accounts"
+	loginURL := "/v0/resource/plugins/aistudio2api/accounts?autologin=1"
 	return pluginapi.AuthLoginStartResponse{
 		Provider:  ProviderID,
 		URL:       loginURL,
 		State:     stateID,
 		ExpiresAt: time.Now().Add(10 * time.Minute),
 		Metadata: map[string]any{
-			"instructions": "Open /v0/resource/plugins/aistudio2api/accounts in your browser to import Google AI Studio Cookies, StorageState JSON, or Chrome profiles.",
+			"instructions": "Open /v0/resource/plugins/aistudio2api/accounts to sign in with local Chrome Incognito or paste Google AI Studio Cookies / StorageState JSON.",
 			"resource_url": loginURL,
 		},
 	}, nil

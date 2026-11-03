@@ -168,16 +168,30 @@ const webUIDashboardHTML = `<!DOCTYPE html>
   </div>
 
   <div class="card">
-    <h3 style="margin-top:0; font-size:16px;">添加 / 导入 Google AI Studio 账户</h3>
+    <h3 style="margin-top:0; font-size:16px;">添加 / 登录 Google AI Studio 账户</h3>
+    <div class="row" style="padding:12px 14px; background:#0b1120; border:1px solid var(--border); border-radius:8px; justify-content:space-between;">
+      <div>
+        <div style="font-weight:600; font-size:14px;">方式一：本机 Chrome 无痕浏览器登录（推荐）</div>
+        <div id="chromeLoginHint" style="font-size:12px; color:var(--muted); margin-top:2px;">
+          弹出隔离的本机 Chrome 无痕窗口（独立临时目录，不读取本机已有浏览器数据），登录 Google AI Studio 后自动拉取凭证并关闭窗口。
+        </div>
+      </div>
+      <button id="chromeLoginBtn" class="success" onclick="loginWithChromeBrowser()" style="white-space:nowrap; padding:10px 18px; font-weight:600;">
+        🌐 启动本机 Chrome 无痕登录
+      </button>
+    </div>
+    <div style="font-size:12px; color:var(--muted); margin: 14px 0 8px 0; font-weight:600;">
+      方式二：手动粘贴 Cookie / StorageState 导入（适用于无桌面环境或远程服务器）
+    </div>
     <div class="row">
-      <input type="text" id="accLabel" placeholder="账户邮箱 (留空将自动从 Cookie 识别)" style="flex:1; min-width:220px;" />
-      <input type="text" id="accProxy" placeholder="单账户代理 (可选，如 http://127.0.0.1:7890)" style="flex:1; min-width:220px;" />
+      <input type="text" id="accLabel" placeholder="账户邮箱 (留空将自动从登录会话或 Cookie 识别)" style="flex:1; min-width:220px;" />
+      <input type="text" id="accProxy" placeholder="单账户代理 (可选，同样适用于无痕登录，如 http://127.0.0.1:7890)" style="flex:1; min-width:260px;" />
       <input type="number" id="accAuthUser" placeholder="authuser 序号 (默认 0)" value="0" style="width:140px;" />
     </div>
     <div class="row">
-      <textarea id="accCookies" rows="4" style="width:100%; font-family:monospace;" placeholder="粘贴浏览器请求头 Cookie (需包含 SAPISID 与 __Secure-1PSID)、Cookie-Editor JSON 数组、或 Playwright storage-state.json 内容..."></textarea>
+      <textarea id="accCookies" rows="3" style="width:100%; font-family:monospace;" placeholder="粘贴浏览器请求头 Cookie (需包含 SAPISID 与 __Secure-1PSID)、Cookie-Editor JSON 数组、或 Playwright storage-state.json 内容..."></textarea>
     </div>
-    <div class="row">
+    <div class="row" style="margin-bottom:0;">
       <div style="display:flex; gap:8px;">
         <button onclick="importCookieAccount()">导入 Cookie / StorageState 账户</button>
         <button class="secondary" onclick="discoverCookieAccounts()">预览 Cookie 内登录的谷歌账号</button>
@@ -306,7 +320,7 @@ async function loadStatus() {
 function renderAccounts(accounts) {
   const tbody = document.getElementById('accountsBody');
   if (!accounts.length) {
-    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted);">暂无已导入账户，请在上方粘贴 Cookie 或使用本机 Chrome 一键导入</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted);">暂无已导入账户，请点击上方「启动本机 Chrome 无痕登录」或粘贴 Cookie 导入</td></tr>';
     return;
   }
   tbody.innerHTML = accounts.map(acc => {
@@ -323,6 +337,7 @@ function renderAccounts(accounts) {
       '<td>' + escapeHtml(acc.proxy || '全局/直连') + '</td>' +
       '<td style="max-width:260px; word-break:break-all; color:var(--muted);">' + escapeHtml(info) + '</td>' +
       '<td style="display:flex; gap:6px; flex-wrap:wrap;">' +
+        '<button onclick="reloginAccount(\'' + escapeJs(acc.id) + '\', \'' + escapeJs(acc.proxy || '') + '\')">无痕重登</button>' +
         '<button class="secondary" onclick="refreshAccount(\'' + escapeJs(acc.id) + '\')">刷新目录</button>' +
         '<button class="secondary" onclick="toggleAccount(\'' + escapeJs(acc.id) + '\', ' + (!acc.enabled) + ', \'' + escapeJs(acc.proxy || '') + '\')">' + (acc.enabled ? '禁用' : '启用') + '</button>' +
         '<button class="danger" onclick="deleteAccount(\'' + escapeJs(acc.id) + '\')">删除</button>' +
@@ -374,6 +389,42 @@ async function stopService() {
   }
 }
 
+
+async function loginWithChromeBrowser() {
+  const btn = document.getElementById('chromeLoginBtn');
+  const proxy = document.getElementById('accProxy').value.trim();
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ 正在等待 Chrome 无痕窗口登录...';
+  }
+  try {
+    showToast('已启动本机 Chrome 无痕窗口，请在弹出的浏览器中登录 Google 账号并进入 AI Studio，完成后窗口将自动关闭...', false);
+    const res = await apiCall('/v0/management/aistudio2api/accounts/login-browser', 'POST', { proxy });
+    const accId = res.account ? res.account.id : '';
+    showToast('Chrome 无痕登录成功，已自动导入账户: ' + accId, false);
+    await loadStatus();
+    loadLogs();
+  } catch (e) {
+    showToast('Chrome 无痕登录未完成: ' + e.message, true);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '🌐 启动本机 Chrome 无痕登录';
+    }
+  }
+}
+
+async function reloginAccount(id, proxy) {
+  try {
+    showToast('已为账户 ' + id + ' 启动本机 Chrome 无痕窗口，请使用该谷歌账号完成登录...', false);
+    const res = await apiCall('/v0/management/aistudio2api/accounts/relogin', 'POST', { account_id: id, proxy: proxy || '' });
+    showToast('账户 ' + (res.account ? res.account.id : id) + ' 重新登录并更新成功！', false);
+    await loadStatus();
+    loadLogs();
+  } catch (e) {
+    showToast('重新登录失败: ' + e.message, true);
+  }
+}
 async function importCookieAccount() {
   const cookies = document.getElementById('accCookies').value.trim();
   if (!cookies) {
@@ -493,6 +544,10 @@ function escapeJs(s) {
 getKey();
 loadStatus();
 loadLogs();
+if (new URLSearchParams(window.location.search).get('autologin') === '1') {
+  window.history.replaceState({}, '', window.location.pathname);
+  setTimeout(() => loginWithChromeBrowser(), 300);
+}
 setInterval(() => { loadStatus(); loadLogs(); }, 6000);
 </script>
 </body>

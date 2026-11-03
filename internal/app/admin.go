@@ -159,7 +159,12 @@ func (admin *runtimeAdmin) CreateAccount(ctx context.Context, input api.AccountC
 	if err := accountConfig.Validate(); err != nil {
 		return api.AdminAccount{}, invalidAccount(err)
 	}
-	created, err := admin.addAccount(ctx, accountConfig, result.StorageState, directory)
+	var created api.AdminAccount
+	if _, exists := admin.accountIDs()[strings.ToLower(strings.TrimSpace(result.Email))]; exists {
+		created, err = admin.saveExistingAccountState(ctx, result.Email, result.StorageState, directory)
+	} else {
+		created, err = admin.addAccount(ctx, accountConfig, result.StorageState, directory)
+	}
 	if err != nil {
 		return api.AdminAccount{}, err
 	}
@@ -265,9 +270,12 @@ func (admin *runtimeAdmin) ImportAccountState(ctx context.Context, input api.Acc
 	}
 	for _, status := range admin.pool.Status() {
 		if strings.EqualFold(status.ID, strings.TrimSpace(email)) {
-			return api.AdminAccount{}, &adminOperationError{
-				status: http.StatusConflict, code: "account_exists", message: "账户已存在: " + status.ID,
+			account, err := admin.saveExistingAccountState(ctx, status.ID, input.StorageState, "")
+			if err != nil {
+				return api.AdminAccount{}, err
 			}
+			admin.requests.log("auth", "INFO", "认证状态账户已更新 | 账户="+account.Label)
+			return account, nil
 		}
 	}
 	fingerprintDirectory := ""
@@ -491,6 +499,50 @@ func (admin *runtimeAdmin) LoginAccount(ctx context.Context, accountID string, v
 		"账户登录完成 | 耗时=%s",
 		time.Since(startedAt).Round(time.Millisecond),
 	))
+	return admin.account(account.ID)
+}
+
+func (admin *runtimeAdmin) saveExistingAccountState(
+	ctx context.Context,
+	accountID string,
+	state aistudio.StorageState,
+	fingerprintDirectory string,
+) (api.AdminAccount, error) {
+	lease, err := admin.pool.AcquireAccount(ctx, accountID)
+	if err != nil {
+		return api.AdminAccount{}, accountOperationError(err)
+	}
+	account := lease.Account()
+	if err := admin.workers.Reset(account.ID); err != nil {
+		return api.AdminAccount{}, errors.Join(err, lease.Release())
+	}
+	if fingerprintDirectory != "" {
+		if err := camoufoxnative.PersistAccountFingerprint(fingerprintDirectory, account.Directory); err != nil {
+			return api.AdminAccount{}, errors.Join(err, lease.Release())
+		}
+	}
+	if err := keepAuthExtension(&state, account.StorageState); err != nil {
+		return api.AdminAccount{}, errors.Join(err, lease.Release())
+	}
+	if err := lease.SaveStorageState(state); err != nil {
+		return api.AdminAccount{}, errors.Join(err, lease.Release())
+	}
+	if err := resetCookieAuthUser(lease, admin.workers.prepareUpdate); err != nil {
+		return api.AdminAccount{}, errors.Join(err, lease.Release())
+	}
+	if err := admin.service.changeModels(func() error {
+		return errors.Join(
+			admin.pool.MarkReady(account.ID),
+			admin.pool.ResetModelAccess(account.ID),
+			admin.pool.SetCatalog(account.ID, account.BenefitTier, nil),
+		)
+	}); err != nil {
+		return api.AdminAccount{}, errors.Join(err, lease.Release())
+	}
+	if err := lease.Release(); err != nil {
+		return api.AdminAccount{}, err
+	}
+	admin.syncAccountModelCatalog(ctx, account)
 	return admin.account(account.ID)
 }
 

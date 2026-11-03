@@ -180,7 +180,7 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 		t.Fatalf("management.handle UI failed: %v", err)
 	}
 	uiResp := uiRes.(pluginapi.ManagementResponse)
-	if uiResp.StatusCode != http.StatusOK || !strings.Contains(string(uiResp.Body), "AIStudio2API 插件控制台") {
+	if uiResp.StatusCode != http.StatusOK || !strings.Contains(string(uiResp.Body), "启动本机 Chrome 无痕登录") {
 		t.Fatalf("unexpected UI response: status=%d len=%d", uiResp.StatusCode, len(uiResp.Body))
 	}
 
@@ -193,10 +193,9 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 		t.Fatalf("management.handle status failed: %v", err)
 	}
 	statusResp := statusRes.(pluginapi.ManagementResponse)
-	if statusResp.StatusCode != http.StatusOK || !strings.Contains(string(statusResp.Body), `"waa_backend":"spidermonkey"`) {
+	if statusResp.StatusCode != http.StatusOK || !strings.Contains(string(statusResp.Body), `"waa_backend":"spidermonkey"`) || !strings.Contains(string(statusResp.Body), `"chrome_available"`) {
 		t.Fatalf("unexpected status response: %s", string(statusResp.Body))
 	}
-
 }
 
 func TestSpiderMonkeyBotGuardVMIntegration(t *testing.T) {

@@ -125,16 +125,22 @@ plugins:
 
 ---
 
-## Account Import & Usage
+## Account Login & Import Guide
 
 When CLIProxyAPI starts, the plugin **automatically starts and pre-warms** in the background. Open the plugin console:
 - Browser URL: `http://127.0.0.1:8317/v0/resource/plugins/aistudio2api/accounts`
 - Or click **Plugins -> AI Studio (WAA)** in the CLIProxyAPI Management Center sidebar.
 
-### 1. Cookie / StorageState Import
+### 1. Local Chrome Incognito Login (Recommended)
+Click **🌐 Launch Local Chrome Incognito Login** in the plugin console (or run `cli-proxy-api --aistudio2api-login`):
+- Launches your locally installed Chrome / Edge / Brave in an isolated temporary directory (`--user-data-dir` + `--incognito`) without reading existing browser profiles or OS keychains;
+- Once you sign in to your Google account and reach AI Studio, the plugin automatically captures the Incognito session's Cookies, StorageState, and account email, closes the window, deletes the temporary directory, and syncs the credential to CLIProxyAPI.
+- Click **Incognito Relogin** on any existing account row to re-authenticate expired credentials.
+
+### 2. Cookie / StorageState Import (For Headless Servers)
 Paste a browser request Cookie header (containing `SAPISID` and `__Secure-1PSID`), a Cookie-Editor JSON array, or a Playwright `storage-state.json` document and click **Import Cookie / StorageState Account**.
 
-### 2. API Request Examples
+### 3. API Request Examples
 
 ```bash
 # Playground channel model (gemini-3.8-flash)

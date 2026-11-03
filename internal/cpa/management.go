@@ -25,6 +25,12 @@ func (p *Plugin) handleCLIRegister() (any, error) {
 	return pluginapi.CommandLineRegistrationResponse{
 		Flags: []pluginapi.CommandLineFlag{
 			{
+				Name:         "aistudio2api-login",
+				Type:         "bool",
+				DefaultValue: "false",
+				Usage:        "Launch local Chrome Incognito window to sign in to Google AI Studio and import account",
+			},
+			{
 				Name:         "aistudio2api-status",
 				Type:         "bool",
 				DefaultValue: "false",
@@ -44,6 +50,24 @@ func (p *Plugin) handleCLIRun(raw []byte) (any, error) {
 		return pluginapi.CommandLineExecutionResponse{
 			ExitCode: 1,
 			Stderr:   []byte("Failed to initialize AIStudio2API runtime: " + err.Error() + "\n"),
+		}, nil
+	}
+
+	if flag, ok := req.TriggeredFlags["aistudio2api-login"]; ok && flag.Set && strings.EqualFold(flag.Value, "true") {
+		created, err := rt.Admin.CreateAccount(p.ctx, api.AccountCreateInput{
+			Proxy: p.appCfg.Proxy,
+		}, nil)
+		if err != nil {
+			return pluginapi.CommandLineExecutionResponse{
+				ExitCode: 1,
+				Stderr:   []byte("Chrome Incognito login failed: " + err.Error() + "\n"),
+			}, nil
+		}
+		_ = p.SyncAccountToHostAuth("", created)
+		out, _ := json.MarshalIndent(created, "", "  ")
+		return pluginapi.CommandLineExecutionResponse{
+			ExitCode: 0,
+			Stdout:   []byte("Successfully logged in and imported AI Studio account:\n" + string(out) + "\n"),
 		}, nil
 	}
 
@@ -71,6 +95,8 @@ func (p *Plugin) handleManagementRegister() (any, error) {
 			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/service/stop", Description: "Stop AIStudio2API generation service"},
 			{Method: http.MethodGet, Path: "/v0/management/aistudio2api/accounts", Description: "List AIStudio2API accounts"},
 			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/accounts", Description: "Import AIStudio2API account from Cookie header or StorageState JSON"},
+			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/accounts/login-browser", Description: "Launch local Chrome Incognito window to sign in to Google AI Studio and auto-import account"},
+			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/accounts/relogin", Description: "Re-authenticate an existing AIStudio2API account via local Chrome Incognito window"},
 			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/accounts/discover-cookies", Description: "Discover Google accounts inside pasted Cookie text"},
 			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/accounts/refresh", Description: "Refresh an account's model catalog and benefit tier"},
 			{Method: http.MethodPost, Path: "/v0/management/aistudio2api/accounts/update", Description: "Update account settings (enabled, proxy, locale, timezone)"},
@@ -130,15 +156,18 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		cooldowns, _ := rt.Admin.Cooldowns(p.ctx)
 		activeReqs, _ := rt.Admin.Requests(p.ctx)
 		models, _ := rt.Admin.CatalogModels(p.ctx)
+		chromeBin, _ := aistudio.FindLocalChromeBinary()
 		return jsonManagementResponse(http.StatusOK, map[string]any{
-			"status":          status,
-			"accounts":        accounts,
-			"cooldowns":       cooldowns,
-			"active_requests": activeReqs,
-			"models_count":    len(models),
-			"waa_backend":     p.appCfg.WAABackend,
-			"data_dir":        p.pluginCfg.DataDir,
-			"accounts_dir":    p.appCfg.AuthStates,
+			"status":           status,
+			"accounts":         accounts,
+			"cooldowns":        cooldowns,
+			"active_requests":  activeReqs,
+			"models_count":     len(models),
+			"waa_backend":      p.appCfg.WAABackend,
+			"data_dir":         p.pluginCfg.DataDir,
+			"accounts_dir":     p.appCfg.AuthStates,
+			"chrome_available": chromeBin != "",
+			"chrome_binary":    chromeBin,
 		}), nil
 
 	case method == http.MethodPost && path == "/v0/management/aistudio2api/service/start":
@@ -162,6 +191,42 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		}
 		return jsonManagementResponse(http.StatusOK, map[string]any{"accounts": accounts}), nil
 
+
+	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/login-browser":
+		var input api.AccountCreateInput
+		if len(req.Body) > 0 {
+			_ = json.Unmarshal(req.Body, &input)
+		}
+		created, err := rt.Admin.CreateAccount(p.ctx, input, nil)
+		if err != nil {
+			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
+		}
+		_ = p.SyncAccountToHostAuth(req.HostCallbackID, created)
+		go func() { _ = rt.EnsureRunning(p.ctx) }()
+		return jsonManagementResponse(http.StatusCreated, map[string]any{"account": created}), nil
+
+	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/relogin":
+		var body struct {
+			AccountID string `json:"account_id"`
+			Proxy     string `json:"proxy"`
+		}
+		if len(req.Body) > 0 {
+			_ = json.Unmarshal(req.Body, &body)
+		}
+		accountID := strings.TrimSpace(body.AccountID)
+		var updated api.AdminAccount
+		var err error
+		if accountID != "" {
+			updated, err = rt.Admin.LoginAccount(p.ctx, accountID, nil)
+		} else {
+			updated, err = rt.Admin.CreateAccount(p.ctx, api.AccountCreateInput{Proxy: body.Proxy}, nil)
+		}
+		if err != nil {
+			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
+		}
+		_ = p.SyncAccountToHostAuth(req.HostCallbackID, updated)
+		go func() { _ = rt.EnsureRunning(p.ctx) }()
+		return jsonManagementResponse(http.StatusOK, map[string]any{"account": updated}), nil
 	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/discover-cookies":
 		var input api.CookieImportInput
 		if err := json.Unmarshal(req.Body, &input); err != nil {

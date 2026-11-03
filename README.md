@@ -125,16 +125,22 @@ plugins:
 
 ---
 
-## 账号导入与使用指南
+## 账号登录与导入指南
 
 启动 CLIProxyAPI 后，插件会**随服务自动启动并预热**。打开插件管理面板：
 - 浏览器访问：`http://127.0.0.1:8317/v0/resource/plugins/aistudio2api/accounts`
 - 或在 CLIProxyAPI 管理中心左侧菜单点击 **「插件 -> AI Studio (WAA)」**。
 
-### 1. Cookie / StorageState 导入
+### 1. 本机 Chrome 无痕浏览器登录（推荐）
+在插件管理面板点击 **「🌐 启动本机 Chrome 无痕登录」**（或命令行运行 `cli-proxy-api --aistudio2api-login`）：
+- 插件会使用独立临时目录（`--user-data-dir` + `--incognito`）弹出本机已安装的 Chrome / Edge / Brave 无痕窗口，**不读取本机已有浏览器数据或系统钥匙串**；
+- 在弹出的无痕窗口中完成 Google 账号登录并跳转至 AI Studio 后，插件会自动拉取当前无痕会话的 Cookie、StorageState 与账户邮箱，自动关闭无痕窗口并清理临时目录，同时将凭证同步至 CLIProxyAPI。
+- 对已有账户点击列表中的 **「无痕重登」** 即可一键刷新失效凭证。
+
+### 2. 手动粘贴 Cookie / StorageState 导入（适用于无桌面环境或远程服务器）
 在面板中粘贴包含 `SAPISID` 与 `__Secure-1PSID` 的浏览器请求头 Cookie 字符串、Cookie-Editor JSON 数组或 Playwright `storage-state.json` 内容，点击 **「导入 Cookie / StorageState 账户」**。
 
-### 2. 调用示例
+### 3. 调用示例
 
 ```bash
 # 调用 Playground 通道模型 (gemini-3.8-flash)
