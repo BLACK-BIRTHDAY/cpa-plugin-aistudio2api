@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -31,6 +32,29 @@ const (
 var wizEmailPattern = regexp.MustCompile(`"oPEP7c":("(?:[^"\\]|\\.)*")`)
 
 const pageInspectExpression = `(() => {
+  const visible = el => {
+    if (!el) return false;
+    try {
+      if (typeof el.checkVisibility === 'function') {
+        return el.checkVisibility({visibilityProperty: true});
+      }
+    } catch {}
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const buttonEnabled = btn => btn && !btn.matches(':disabled') && !btn.closest('[aria-disabled="true"]');
+  const dismissSelectors = [
+    'ms-g1-welcome-dialog button[aria-label="Close dialog"]',
+    'button[aria-label="Close guided tour"]',
+    '#glue-cookie-notification-bar-1 .glue-cookie-notification-bar__reject'
+  ];
+  for (const sel of dismissSelectors) {
+    try {
+      const btn = [...document.querySelectorAll(sel)].find(visible);
+      if (btn && buttonEnabled(btn)) btn.click();
+    } catch {}
+  }
+
   const ready = document.readyState === 'complete' || document.readyState === 'interactive';
   let email = '';
   try {
@@ -49,18 +73,35 @@ const pageInspectExpression = `(() => {
   try {
     ls = Object.keys(localStorage).sort().map(name => ({name, value: localStorage.getItem(name) || ''}));
   } catch {}
-  const hasPrompt = Boolean(document.querySelector('ms-prompt-box textarea, textarea'));
-  const hasDialog = Boolean(document.querySelector('mat-dialog-container, ms-onboarding, [role="dialog"]'));
+
+  const promptBox = [...document.querySelectorAll('ms-prompt-box textarea')].find(visible) || null;
+  const blockingDialogs = [...document.querySelectorAll('mat-dialog-container, ms-tos-dialog, ms-onboarding')].filter(visible);
+  const hasPrompt = Boolean(promptBox) && blockingDialogs.length === 0;
+  const hasDialog = blockingDialogs.length > 0;
+
+  let accessTokenStatus = Number(window.__aistudio_access_token_status || 0);
+  if (!accessTokenStatus) {
+    try {
+      const entries = performance.getEntriesByType('resource').filter(e => e.name && e.name.endsWith('/GenerateAccessToken'));
+      if (entries.length > 0) {
+        const last = entries[entries.length - 1];
+        if (typeof last.responseStatus === 'number' && last.responseStatus > 0) {
+          accessTokenStatus = last.responseStatus;
+        }
+      }
+    } catch {}
+  }
+
   return JSON.stringify({
     ready,
     email: (email || '').toLowerCase().trim(),
     hasPrompt,
     hasDialog,
+    accessTokenStatus,
     ls,
     href: location.href || ''
   });
 })()`
-
 // NativeLoginDriver 通过启动本机 Chrome/Edge/Brave 的独立无痕窗口（--incognito + 临时 --user-data-dir）完成 AI Studio 登录并自动拉取凭证
 type NativeLoginDriver struct {
 	chromePath string
@@ -238,25 +279,26 @@ func (driver *NativeLoginDriver) Login(ctx context.Context, request IsolatedLogi
 		return IsolatedLoginResult{}, err
 	}
 
-	// 阶段 1：轮询 /json/list，在用户于 accounts.google.com 输入账号密码期间不挂载任何 CDP WebSocket
+	// 阶段 1：轮询 /json/list，等待用户登录 Google 并进入 AI Studio 且输入框就绪（新号需完成条款弹窗）
 	var activePageWS string
 	var verifiedEmail string
 	var capturedState StorageState
-	var firstAIStudioSeen time.Time
+	var promptReadySince time.Time
+	var driveError string
 
 	httpClient := &http.Client{Timeout: 3 * time.Second}
 	for {
 		if err := loginCtx.Err(); err != nil {
-			return IsolatedLoginResult{}, fmt.Errorf("等待 Chrome 无痕登录超时或已取消: %w", err)
+			return IsolatedLoginResult{}, fmt.Errorf("等待 Chrome 窗口登录超时或已取消: %w", err)
 		}
 		if exited.Load() {
-			return IsolatedLoginResult{}, errors.New("Chrome 无痕窗口已关闭，登录已取消")
+			return IsolatedLoginResult{}, errors.New("Chrome 登录窗口已关闭，登录已取消")
 		}
 
 		targets, err := listCDPTargets(loginCtx, httpClient, debugPort)
 		if err != nil {
 			if exited.Load() {
-				return IsolatedLoginResult{}, errors.New("Chrome 无痕窗口已关闭，登录已取消")
+				return IsolatedLoginResult{}, errors.New("Chrome 登录窗口已关闭，登录已取消")
 			}
 			select {
 			case <-loginCtx.Done():
@@ -277,7 +319,7 @@ func (driver *NativeLoginDriver) Login(ctx context.Context, request IsolatedLogi
 			}
 		}
 		if aiStudioTarget == nil {
-			firstAIStudioSeen = time.Time{}
+			promptReadySince = time.Time{}
 			select {
 			case <-loginCtx.Done():
 				return IsolatedLoginResult{}, loginCtx.Err()
@@ -285,23 +327,45 @@ func (driver *NativeLoginDriver) Login(ctx context.Context, request IsolatedLogi
 				continue
 			}
 		}
-		if firstAIStudioSeen.IsZero() {
-			firstAIStudioSeen = time.Now()
-		}
 		activePageWS = aiStudioTarget.WebSocketDebuggerURL
-		// 阶段 2：用户已跳转回 https://aistudio.google.com/，读取无痕会话的 Cookie、localStorage 与登录邮箱
-		state, email, ready, err := inspectAIStudioPage(loginCtx, activePageWS)
-		if err == nil && len(state.Cookies) > 0 {
+
+		// 阶段 2：检查 AI Studio 提示词输入框是否已就绪（无条款/引导弹窗遮挡）并读取 GenerateAccessToken 状态
+		state, info, err := inspectAIStudioPage(loginCtx, activePageWS)
+		if err == nil && len(state.Cookies) > 0 && info.HasPrompt {
+			if promptReadySince.IsZero() {
+				promptReadySince = time.Now()
+			}
 			if _, signErr := NewSigner().Authorization(state); signErr == nil {
-				if email == "" && (ready || time.Since(firstAIStudioSeen) > 2*time.Second) {
+				email := strings.ToLower(strings.TrimSpace(info.Email))
+				if email == "" && time.Since(promptReadySince) > 1500*time.Millisecond {
 					email, _ = resolveEmailViaHTTP(loginCtx, &state, request.Proxy)
 				}
 				if email != "" && strings.Contains(email, "@") {
+					// 等待页面发出 GenerateAccessToken 请求以判断 Google Drive 是否已授权
+					if info.AccessTokenStatus == 0 && time.Since(promptReadySince) < 3500*time.Millisecond {
+						select {
+						case <-loginCtx.Done():
+							return IsolatedLoginResult{}, loginCtx.Err()
+						case <-time.After(400 * time.Millisecond):
+							continue
+						}
+					}
+					verifiedEmail = email
+					if info.AccessTokenStatus == http.StatusUnauthorized {
+						// 阶段 3：与原版一致，新账号未授权 Google Drive 时自动跳转 /library 点击 Allow Drive access 并完成 OAuth 授权弹窗
+						if authErr := authorizeDriveOverCDP(loginCtx, httpClient, debugPort, activePageWS, verifiedEmail, &exited); authErr != nil {
+							driveError = authErr.Error()
+						}
+						if refreshedState, _, refreshErr := inspectAIStudioPage(loginCtx, activePageWS); refreshErr == nil && len(refreshedState.Cookies) > 0 {
+							state = refreshedState
+						}
+					}
 					capturedState = state
-					verifiedEmail = strings.ToLower(strings.TrimSpace(email))
 					break
 				}
 			}
+		} else {
+			promptReadySince = time.Time{}
 		}
 
 		select {
@@ -326,6 +390,7 @@ func (driver *NativeLoginDriver) Login(ctx context.Context, request IsolatedLogi
 		StorageState: capturedState,
 		Email:        verifiedEmail,
 		VerifiedAt:   time.Now().UTC(),
+		DriveError:   driveError,
 		CloseError:   closeErrText,
 	}, nil
 }
@@ -387,22 +452,23 @@ func listCDPTargets(ctx context.Context, client *http.Client, port int) ([]cdpPa
 }
 
 type cdpPageInspection struct {
-	Ready     bool               `json:"ready"`
-	Email     string             `json:"email"`
-	HasPrompt bool               `json:"hasPrompt"`
-	HasDialog bool               `json:"hasDialog"`
-	LS        []StorageItem `json:"ls"`
-	Href      string             `json:"href"`
+	Ready             bool          `json:"ready"`
+	Email             string        `json:"email"`
+	HasPrompt         bool          `json:"hasPrompt"`
+	HasDialog         bool          `json:"hasDialog"`
+	AccessTokenStatus int           `json:"accessTokenStatus"`
+	LS                []StorageItem `json:"ls"`
+	Href              string        `json:"href"`
 }
 
-func inspectAIStudioPage(ctx context.Context, pageWS string) (StorageState, string, bool, error) {
+func inspectAIStudioPage(ctx context.Context, pageWS string) (StorageState, cdpPageInspection, error) {
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
 	conn, _, err := dialer.DialContext(callCtx, pageWS, nil)
 	if err != nil {
-		return StorageState{}, "", false, err
+		return StorageState{}, cdpPageInspection{}, err
 	}
 	defer conn.Close()
 	stop := context.AfterFunc(callCtx, func() { _ = conn.Close() })
@@ -422,7 +488,7 @@ func inspectAIStudioPage(ctx context.Context, pageWS string) (StorageState, stri
 		} `json:"cookies"`
 	}
 	if err := cdpCall(callCtx, conn, 1, "Network.getAllCookies", map[string]any{}, &rawCookies); err != nil {
-		return StorageState{}, "", false, err
+		return StorageState{}, cdpPageInspection{}, err
 	}
 
 	cookies := make([]StateCookie, 0, len(rawCookies.Cookies))
@@ -497,8 +563,8 @@ func inspectAIStudioPage(ctx context.Context, pageWS string) (StorageState, stri
 		Cookies: cookies,
 		Origins: origins,
 	}
-	pageReady := info.HasPrompt || info.HasDialog || info.Ready
-	return state, strings.ToLower(strings.TrimSpace(info.Email)), pageReady, nil
+	info.Email = strings.ToLower(strings.TrimSpace(info.Email))
+	return state, info, nil
 }
 
 func resolveEmailViaHTTP(ctx context.Context, state *StorageState, proxy string) (string, error) {
@@ -574,6 +640,37 @@ const stealthInitScript = `(() => {
       }
     }
   } catch {}
+  try {
+    if (!window.__aistudio_xhr_hooked) {
+      window.__aistudio_xhr_hooked = true;
+      const origOpen = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+        try {
+          if (typeof url === 'string' && url.includes('/GenerateAccessToken')) {
+            this.addEventListener('loadend', () => {
+              if (this.status > 0) {
+                window.__aistudio_access_token_status = this.status;
+              }
+            });
+          }
+        } catch {}
+        return origOpen.call(this, method, url, ...rest);
+      };
+      const origFetch = window.fetch;
+      if (typeof origFetch === 'function') {
+        window.fetch = async function(input, init) {
+          const resp = await origFetch.call(this, input, init);
+          try {
+            const url = typeof input === 'string' ? input : (input && input.url) || '';
+            if (url.includes('/GenerateAccessToken') && resp && resp.status > 0) {
+              window.__aistudio_access_token_status = resp.status;
+            }
+          } catch {}
+          return resp;
+        };
+      }
+    }
+  } catch {}
 })();`
 
 func ensureStealthOnTarget(ctx context.Context, pageWS string) {
@@ -599,6 +696,240 @@ func ensureStealthOnTarget(ctx context.Context, pageWS string) {
 	}, &out)
 	_ = cdpCall(callCtx, conn, 3, "Runtime.evaluate", map[string]any{
 		"expression": stealthInitScript,
+	}, &out)
+}
+
+const driveAccessButtonExpr = `(() => {
+  const visible = el => {
+    if (!el) return false;
+    const box = el.getBoundingClientRect();
+    if (box.width <= 0 || box.height <= 0) return false;
+    const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    return Boolean(hit && (el.contains(hit) || hit.contains(el)));
+  };
+  const candidates = [...document.querySelectorAll('button[aria-label="Allow Drive access"], button')];
+  return candidates.find(btn => {
+    const text = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || '')).trim();
+    return /Allow Drive access|Enable Drive|允许访问|云端硬盘/i.test(text) && visible(btn);
+  }) || null;
+})()`
+
+const driveApproveButtonExpr = `document.querySelector('#submit_approve_access')`
+
+func authorizeDriveOverCDP(
+	ctx context.Context,
+	httpClient *http.Client,
+	debugPort int,
+	mainPageWS string,
+	email string,
+	exited *atomic.Bool,
+) error {
+	driveCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+
+	initialTargets, err := listCDPTargets(driveCtx, httpClient, debugPort)
+	if err != nil {
+		return err
+	}
+	knownIDs := make(map[string]struct{}, len(initialTargets))
+	for _, t := range initialTargets {
+		knownIDs[t.ID] = struct{}{}
+	}
+
+	if err := cdpNavigate(driveCtx, mainPageWS, aiStudioOriginURL+"/library"); err != nil {
+		return fmt.Errorf("导航至 /library 授权 Drive: %w", err)
+	}
+
+	// 等待 /library 页面出现 Allow Drive access 按钮并点击打开 OAuth 授权弹窗
+	var popupTarget *cdpPageTarget
+	for popupTarget == nil {
+		if err := driveCtx.Err(); err != nil {
+			return fmt.Errorf("等待 Drive 授权弹窗超时: %w", err)
+		}
+		if exited.Load() {
+			return errors.New("浏览器窗口已关闭")
+		}
+		_ = cdpClickElement(driveCtx, mainPageWS, driveAccessButtonExpr)
+
+		waitPopupDeadline := time.Now().Add(4 * time.Second)
+		for time.Now().Before(waitPopupDeadline) {
+			targets, err := listCDPTargets(driveCtx, httpClient, debugPort)
+			if err == nil {
+				for i := range targets {
+					t := &targets[i]
+					if t.Type == "page" && t.WebSocketDebuggerURL != "" {
+						ensureStealthOnTarget(driveCtx, t.WebSocketDebuggerURL)
+						if _, known := knownIDs[t.ID]; !known {
+							popupTarget = t
+							break
+						}
+					}
+				}
+			}
+			if popupTarget != nil {
+				break
+			}
+			select {
+			case <-driveCtx.Done():
+				return driveCtx.Err()
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+	}
+
+	// 在 OAuth 授权弹窗中自动选择当前登录邮箱并点击同意（同时允许用户手动点击），直到弹窗关闭
+	emailJSON, _ := json.Marshal(strings.ToLower(strings.TrimSpace(email)))
+	accountSelectExpr := fmt.Sprintf(`((email) => {
+  const items = [...document.querySelectorAll('[data-email]')];
+  return items.find(item => (item.getAttribute('data-email') || '').toLowerCase() === email) || (items.length === 1 ? items[0] : null);
+})(%s)`, string(emailJSON))
+
+	for {
+		if err := driveCtx.Err(); err != nil {
+			return fmt.Errorf("等待 Drive OAuth 弹窗完成超时: %w", err)
+		}
+		if exited.Load() {
+			return errors.New("浏览器窗口已关闭")
+		}
+		targets, err := listCDPTargets(driveCtx, httpClient, debugPort)
+		if err != nil {
+			break
+		}
+		var currentPopup *cdpPageTarget
+		for i := range targets {
+			if targets[i].ID == popupTarget.ID {
+				currentPopup = &targets[i]
+				break
+			}
+		}
+		if currentPopup == nil {
+			// 弹窗已关闭，Drive OAuth 授权完成
+			break
+		}
+		if currentPopup.WebSocketDebuggerURL != "" {
+			ensureStealthOnTarget(driveCtx, currentPopup.WebSocketDebuggerURL)
+			step, _ := cdpEvalString(driveCtx, currentPopup.WebSocketDebuggerURL, fmt.Sprintf(
+				`(() => (%s) ? 'approve' : (%s) ? 'account' : '')()`,
+				driveApproveButtonExpr,
+				accountSelectExpr,
+			))
+			switch step {
+			case "approve":
+				_ = cdpClickElement(driveCtx, currentPopup.WebSocketDebuggerURL, driveApproveButtonExpr)
+			case "account":
+				_ = cdpClickElement(driveCtx, currentPopup.WebSocketDebuggerURL, accountSelectExpr)
+			}
+		}
+		select {
+		case <-driveCtx.Done():
+			return driveCtx.Err()
+		case <-time.After(450 * time.Millisecond):
+		}
+	}
+
+	// 切回 /prompts/new_chat 并确认 GenerateAccessToken 返回 200
+	_, _ = cdpEvalString(driveCtx, mainPageWS, `(() => { window.__aistudio_access_token_status = 0; try { performance.clearResourceTimings(); } catch {} return 'ok'; })()`)
+	if err := cdpNavigate(driveCtx, mainPageWS, aiStudioOriginURL+"/prompts/new_chat"); err != nil {
+		return err
+	}
+	verifyDeadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(verifyDeadline) {
+		if _, info, err := inspectAIStudioPage(driveCtx, mainPageWS); err == nil {
+			if info.AccessTokenStatus == http.StatusOK {
+				return nil
+			}
+		}
+		select {
+		case <-driveCtx.Done():
+			return driveCtx.Err()
+		case <-time.After(350 * time.Millisecond):
+		}
+	}
+	return nil
+}
+
+func cdpNavigate(ctx context.Context, pageWS string, targetURL string) error {
+	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	dialer := websocket.Dialer{HandshakeTimeout: 2 * time.Second}
+	conn, _, err := dialer.DialContext(callCtx, pageWS, nil)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	var out map[string]any
+	return cdpCall(callCtx, conn, 10, "Page.navigate", map[string]any{"url": targetURL}, &out)
+}
+
+func cdpEvalString(ctx context.Context, pageWS string, expression string) (string, error) {
+	callCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	dialer := websocket.Dialer{HandshakeTimeout: 2 * time.Second}
+	conn, _, err := dialer.DialContext(callCtx, pageWS, nil)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	var evalResp struct {
+		Result struct {
+			Value string `json:"value"`
+		} `json:"result"`
+	}
+	if err := cdpCall(callCtx, conn, 11, "Runtime.evaluate", map[string]any{
+		"expression":    expression,
+		"returnByValue": true,
+	}, &evalResp); err != nil {
+		return "", err
+	}
+	return evalResp.Result.Value, nil
+}
+
+func cdpClickElement(ctx context.Context, pageWS string, elementExpr string) error {
+	coordExpr := fmt.Sprintf(`(() => {
+  const el = %s;
+  if (!el) return '';
+  try { el.scrollIntoView({block: 'center', inline: 'center'}); } catch {}
+  const box = el.getBoundingClientRect();
+  if (box.width <= 0 || box.height <= 0) return '';
+  return JSON.stringify([box.left + box.width / 2, box.top + box.height / 2]);
+})()`, elementExpr)
+	encoded, err := cdpEvalString(ctx, pageWS, coordExpr)
+	if err != nil || encoded == "" {
+		return errors.New("element not visible")
+	}
+	var pt [2]float64
+	if err := json.Unmarshal([]byte(encoded), &pt); err != nil {
+		return err
+	}
+	x, y := math.Round(pt[0]), math.Round(pt[1])
+
+	callCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	dialer := websocket.Dialer{HandshakeTimeout: 2 * time.Second}
+	conn, _, err := dialer.DialContext(callCtx, pageWS, nil)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	var out map[string]any
+	_ = cdpCall(callCtx, conn, 20, "Input.dispatchMouseEvent", map[string]any{
+		"type": "mouseMoved",
+		"x":    x,
+		"y":    y,
+	}, &out)
+	_ = cdpCall(callCtx, conn, 21, "Input.dispatchMouseEvent", map[string]any{
+		"type":       "mousePressed",
+		"x":          x,
+		"y":          y,
+		"button":     "left",
+		"clickCount": 1,
+	}, &out)
+	return cdpCall(callCtx, conn, 22, "Input.dispatchMouseEvent", map[string]any{
+		"type":       "mouseReleased",
+		"x":          x,
+		"y":          y,
+		"button":     "left",
+		"clickCount": 1,
 	}, &out)
 }
 
