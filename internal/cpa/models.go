@@ -107,7 +107,7 @@ func (p *Plugin) handleModelRoute(raw []byte) (any, error) {
 
 	// If route_unprefixed_models is explicitly enabled, or if aistudio2api has active accounts
 	// and no competing built-in gemini provider has auth, route known AI Studio models to self.
-	routeUnprefixed := boolOrDefault(p.Config().RouteUnprefixedModels, false)
+	routeUnprefixed := boolOrDefault(p.Config().RouteUnprefixedModels, true)
 	if !routeUnprefixed {
 		hasBuiltinGemini := false
 		for _, prov := range req.AvailableProviders {
@@ -177,10 +177,6 @@ func (p *Plugin) collectCatalogModels() []pluginapi.ModelInfo {
 
 func (p *Plugin) collectCatalogModelsForAccount(accountID string) []pluginapi.ModelInfo {
 	rawModels := p.collectRawCatalogModels(accountID)
-	prefix := strings.TrimSpace(p.Config().ModelPrefix)
-	if prefix == "" {
-		prefix = "aistudio/"
-	}
 	searchAliases := boolOrDefault(p.Config().SearchModelAliases, true)
 
 	out := make([]pluginapi.ModelInfo, 0, len(rawModels)*2)
@@ -202,29 +198,15 @@ func (p *Plugin) collectCatalogModelsForAccount(accountID string) []pluginapi.Mo
 		if info.ID == "" {
 			continue
 		}
-		// 1. Register unprefixed model ID (e.g., "gemini-2.5-pro")
+		// Register canonical unprefixed model ID (e.g., "gemini-3.8-flash", "gemini-3.8-flash-build")
 		addModel(info)
 
-		// 2. Register prefixed model ID (e.g., "aistudio/gemini-2.5-pro") so it never collides with native providers
-		if prefix != "" && !strings.HasPrefix(strings.ToLower(info.ID), strings.ToLower(prefix)) {
-			prefixed := info
-			prefixed.ID = prefix + info.ID
-			prefixed.DisplayName = "[AI Studio] " + info.DisplayName
-			addModel(prefixed)
-		}
-
-		// 3. Register -search alias for models supporting Google Search grounding
+		// Register -search alias for models supporting Google Search grounding
 		if searchAliases && m.Capabilities["search"] && !strings.HasSuffix(info.ID, "-search") {
 			searchInfo := info
 			searchInfo.ID = info.ID + "-search"
 			searchInfo.DisplayName = info.DisplayName + " (Search)"
 			addModel(searchInfo)
-			if prefix != "" {
-				prefixedSearch := searchInfo
-				prefixedSearch.ID = prefix + searchInfo.ID
-				prefixedSearch.DisplayName = "[AI Studio] " + searchInfo.DisplayName
-				addModel(prefixedSearch)
-			}
 		}
 	}
 	return out

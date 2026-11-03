@@ -101,12 +101,12 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 		if m.ID == "gemini-2.5-pro" {
 			hasUnprefixed = true
 		}
-		if m.ID == "aistudio/gemini-2.5-pro" {
+		if strings.HasPrefix(m.ID, "aistudio/") {
 			hasPrefixed = true
 		}
 	}
-	if !hasUnprefixed || !hasPrefixed {
-		t.Fatalf("expected both gemini-2.5-pro and aistudio/gemini-2.5-pro in catalog")
+	if !hasUnprefixed || hasPrefixed {
+		t.Fatalf("expected unprefixed gemini-2.5-pro without duplicate aistudio/* prefix in catalog")
 	}
 
 	routeReq, _ := json.Marshal(pluginapi.ModelRouteRequest{

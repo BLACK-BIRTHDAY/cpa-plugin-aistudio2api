@@ -198,9 +198,7 @@ func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
 	cfg.AutoStart = boolOrDefault(pcfg.AutoStart, true)
 	cfg.MediaOutput = config.MediaOutputInline
 
-	if pcfg.ModelPrefix == "" {
-		pcfg.ModelPrefix = "aistudio/"
-	}
+	pcfg.ModelPrefix = strings.TrimSpace(pcfg.ModelPrefix)
 	return pcfg, cfg, nil
 }
 

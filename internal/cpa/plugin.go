@@ -239,16 +239,10 @@ func (p *Plugin) handleRegister(raw []byte) (any, error) {
 					Description: "Maximum concurrent generation requests per AI Studio account",
 				},
 				{
-					Name:        "model_prefix",
-					Type:        pluginapi.ConfigFieldTypeString,
-					Default:     "aistudio/",
-					Description: "Model prefix routed directly to AIStudio2API",
-				},
-				{
 					Name:        "route_unprefixed_models",
 					Type:        pluginapi.ConfigFieldTypeBoolean,
 					Default:     true,
-					Description: "Route unprefixed AI Studio models (e.g. build-*, gemini-*) when accounts are available",
+					Description: "Route AI Studio models (Playground & Build) when accounts are available",
 				},
 				{
 					Name:        "sync_auth_files",

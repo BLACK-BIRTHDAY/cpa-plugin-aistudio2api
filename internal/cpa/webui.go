@@ -198,7 +198,7 @@ const webUIDashboardHTML = `<!DOCTYPE html>
     <div class="card" style="margin-bottom:0">
       <div class="stat-label">已发现 AI Studio 模型</div>
       <div class="stat-value" id="statModels">0</div>
-      <div style="font-size:12px; color:var(--muted); margin-top:8px;">支持原始模型名与 aistudio/* 前缀</div>
+      <div style="font-size:12px; color:var(--muted); margin-top:8px;">含 Playground 与 Build 通道原生模型</div>
     </div>
     <div class="card" style="margin-bottom:0">
       <div class="stat-label">冷却中 / 需重登账户</div>
