@@ -5,289 +5,664 @@ const webUIDashboardHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AIStudio2API 插件管理 · CLIProxyAPI</title>
+<title>AIStudio2API 插件控制台 · CLIProxyAPI</title>
 <style>
   :root {
-    --bg: #0f172a;
-    --surface: #1e293b;
-    --surface-hover: #334155;
-    --border: #334155;
-    --text: #f8fafc;
-    --muted: #94a3b8;
+    --bg-base: #060913;
+    --glass-bg: rgba(17, 25, 40, 0.62);
+    --glass-bg-elevated: rgba(30, 41, 59, 0.55);
+    --glass-bg-subtle: rgba(15, 23, 42, 0.48);
+    --glass-input: rgba(9, 14, 26, 0.68);
+    --glass-border: rgba(255, 255, 255, 0.09);
+    --glass-border-strong: rgba(255, 255, 255, 0.16);
+    --glass-highlight: inset 0 1px 0 0 rgba(255, 255, 255, 0.12);
+    --glass-shadow: 0 16px 40px -12px rgba(0, 0, 0, 0.55);
+    --text: #f1f5f9;
+    --text-secondary: #cbd5e1;
+    --muted: #8b9bb4;
     --accent: #3b82f6;
-    --accent-hover: #2563eb;
+    --accent-glow: rgba(59, 130, 246, 0.32);
     --success: #10b981;
+    --success-bg: rgba(16, 185, 129, 0.15);
+    --success-border: rgba(52, 211, 153, 0.32);
     --warning: #f59e0b;
+    --warning-bg: rgba(245, 158, 11, 0.14);
+    --warning-border: rgba(251, 191, 36, 0.35);
     --danger: #ef4444;
+    --danger-bg: rgba(239, 68, 68, 0.15);
+    --danger-border: rgba(248, 113, 113, 0.32);
   }
   * { box-sizing: border-box; }
+  ::selection {
+    background: rgba(59, 130, 246, 0.35);
+    color: #fff;
+  }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.4); border-radius: 999px; }
+  ::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.28); border-radius: 999px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.45); }
+
   body {
     margin: 0;
-    padding: 24px;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: var(--bg);
+    padding: 28px 24px 48px;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif;
+    background-color: var(--bg-base);
+    background-image:
+      radial-gradient(circle at 12% 8%, rgba(56, 189, 248, 0.16), transparent 38%),
+      radial-gradient(circle at 88% 14%, rgba(99, 102, 241, 0.16), transparent 42%),
+      radial-gradient(circle at 50% 88%, rgba(16, 185, 129, 0.10), transparent 45%);
+    background-attachment: fixed;
     color: var(--text);
     line-height: 1.5;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
   }
-  .container { max-width: 1180px; margin: 0 auto; }
-  header {
+
+  .container { max-width: 1260px; margin: 0 auto; }
+
+  /* 顶部毛玻璃导航栏 */
+  .top-header {
     display: flex;
     flex-wrap: wrap;
     justify-content: space-between;
     align-items: center;
     gap: 16px;
-    padding-bottom: 20px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 24px;
+    padding: 18px 22px;
+    margin-bottom: 20px;
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-highlight), var(--glass-shadow);
+    border-radius: 16px;
   }
-  h1 { margin: 0; font-size: 22px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
-  .badge {
-    display: inline-block;
-    padding: 2px 10px;
-    border-radius: 999px;
-    font-size: 12px;
+  .brand-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  h1 {
+    margin: 0;
+    font-size: 20px;
     font-weight: 600;
-    background: var(--surface-hover);
-    color: var(--text);
+    letter-spacing: -0.02em;
+    color: #fff;
   }
-  .badge.success { background: rgba(16, 185, 129, 0.2); color: #34d399; }
-  .badge.warning { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
-  .badge.danger { background: rgba(239, 68, 68, 0.2); color: #f87171; }
-  .auth-bar { display: flex; gap: 8px; align-items: center; }
+  .subtitle {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  /* 徽章系统 */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    background: rgba(148, 163, 184, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+  .badge.success {
+    background: var(--success-bg);
+    border-color: var(--success-border);
+    color: #34d399;
+  }
+  .badge.warning {
+    background: var(--warning-bg);
+    border-color: var(--warning-border);
+    color: #fbbf24;
+  }
+  .badge.danger {
+    background: var(--danger-bg);
+    border-color: var(--danger-border);
+    color: #f87171;
+  }
+  .badge.accent {
+    background: rgba(59, 130, 246, 0.16);
+    border-color: rgba(96, 165, 250, 0.35);
+    color: #93c5fd;
+  }
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 8px currentColor;
+  }
+
+  /* 表单控件与毛玻璃按钮 */
+  .auth-bar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
   input, textarea, select {
-    background: #0b1120;
-    border: 1px solid var(--border);
+    background: var(--glass-input);
+    border: 1px solid var(--glass-border);
     color: var(--text);
     padding: 8px 12px;
-    border-radius: 6px;
+    border-radius: 9px;
     font-size: 13px;
+    transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+    outline: none;
   }
+  input::placeholder, textarea::placeholder { color: rgba(139, 155, 180, 0.65); }
+  input:focus, textarea:focus, select:focus {
+    border-color: rgba(96, 165, 250, 0.65);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+    background: rgba(9, 14, 26, 0.85);
+  }
+
   button {
-    background: var(--accent);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    background: linear-gradient(180deg, rgba(59, 130, 246, 0.92), rgba(37, 99, 235, 0.92));
     color: #fff;
-    border: none;
+    border: 1px solid rgba(147, 197, 253, 0.32);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 4px 12px rgba(37, 99, 235, 0.25);
     padding: 8px 14px;
-    border-radius: 6px;
+    border-radius: 9px;
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
-    transition: background 0.15s;
+    transition: all 0.16s ease;
+    white-space: nowrap;
   }
-  button:hover { background: var(--accent-hover); }
-  button.secondary { background: var(--surface-hover); }
-  button.secondary:hover { background: #475569; }
-  button.danger { background: var(--danger); }
-  button.success { background: var(--success); }
-  button.warning { background: var(--warning); color: #0f172a; font-weight: 600; }
-  button.warning:hover { background: #d97706; color: #fff; }
-  button.sm { padding: 5px 10px; font-size: 12px; white-space: nowrap; }
-  .grid {
+  button:hover:not(:disabled) {
+    background: linear-gradient(180deg, rgba(96, 165, 250, 0.96), rgba(37, 99, 235, 0.98));
+    transform: translateY(-1px);
+  }
+  button:active:not(:disabled) { transform: translateY(0); }
+  button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+  button.secondary {
+    background: rgba(51, 65, 85, 0.48);
+    border: 1px solid var(--glass-border-strong);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    color: var(--text-secondary);
+  }
+  button.secondary:hover:not(:disabled) {
+    background: rgba(71, 85, 105, 0.65);
+    color: #fff;
+  }
+
+  button.success {
+    background: linear-gradient(180deg, rgba(16, 185, 129, 0.92), rgba(5, 150, 105, 0.92));
+    border-color: rgba(110, 231, 183, 0.35);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 4px 14px rgba(16, 185, 129, 0.25);
+  }
+  button.success:hover:not(:disabled) {
+    background: linear-gradient(180deg, rgba(52, 211, 153, 0.95), rgba(5, 150, 105, 0.98));
+  }
+
+  button.warning {
+    background: linear-gradient(180deg, rgba(245, 158, 11, 0.95), rgba(217, 119, 6, 0.95));
+    border-color: rgba(253, 230, 138, 0.4);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 4px 12px rgba(245, 158, 11, 0.22);
+    color: #090d16;
+    font-weight: 600;
+  }
+  button.warning:hover:not(:disabled) {
+    background: linear-gradient(180deg, rgba(251, 191, 36, 0.98), rgba(217, 119, 6, 1));
+    color: #090d16;
+  }
+
+  button.danger {
+    background: rgba(239, 68, 68, 0.16);
+    border: 1px solid rgba(248, 113, 113, 0.32);
+    box-shadow: none;
+    color: #fca5a5;
+  }
+  button.danger:hover:not(:disabled) {
+    background: rgba(239, 68, 68, 0.85);
+    color: #fff;
+  }
+
+  button.sm {
+    padding: 5px 10px;
+    font-size: 12px;
+    border-radius: 7px;
+  }
+
+  /* 指标卡片网格 */
+  .stats-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    grid-template-columns: repeat(4, 1fr);
     gap: 16px;
-    margin-bottom: 24px;
-  }
-  .card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 18px;
     margin-bottom: 20px;
   }
-  .method-panel {
-    background: #0b1120;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 14px 16px;
-    margin-bottom: 14px;
+  @media (max-width: 960px) {
+    .stats-grid { grid-template-columns: repeat(2, 1fr); }
   }
-  .method-panel:last-child { margin-bottom: 0; }
+  @media (max-width: 560px) {
+    .stats-grid { grid-template-columns: 1fr; }
+  }
+
+  /* 毛玻璃容器卡片 */
+  .glass-card {
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-highlight), var(--glass-shadow);
+    border-radius: 16px;
+    padding: 20px 22px;
+    margin-bottom: 20px;
+  }
+  .stat-card {
+    margin-bottom: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    min-height: 128px;
+  }
+  .stat-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--muted);
+  }
+  .stat-value {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 6px 0 10px;
+    font-variant-numeric: tabular-nums;
+    color: #fff;
+  }
+  .stat-footer {
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* 双栏登录区 */
+  .section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  .section-title {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .login-grid {
+    display: grid;
+    grid-template-columns: 1fr 1.15fr;
+    gap: 16px;
+    align-items: stretch;
+  }
+  @media (max-width: 960px) {
+    .login-grid { grid-template-columns: 1fr; }
+  }
+  .method-panel {
+    background: var(--glass-bg-subtle);
+    border: 1px solid var(--glass-border);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .method-panel.recommended {
+    background: linear-gradient(145deg, rgba(16, 185, 129, 0.09), rgba(15, 23, 42, 0.55));
+    border-color: rgba(52, 211, 153, 0.25);
+  }
   .method-title {
     font-weight: 600;
     font-size: 14px;
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 8px;
+    color: #fff;
   }
   .method-desc {
     font-size: 12px;
     color: var(--muted);
-    margin-top: 4px;
-    margin-bottom: 12px;
+    margin: 6px 0 14px;
+    line-height: 1.55;
   }
-  .stat-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-  .stat-value { font-size: 24px; font-weight: 700; margin-top: 4px; }
-  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+  .field-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin-bottom: 5px;
+    display: block;
+  }
+  .row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-bottom: 10px;
+  }
   .row:last-child { margin-bottom: 0; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
-  th { color: var(--muted); font-weight: 500; }
-  .cooldown-item {
-    background: rgba(245, 158, 11, 0.12);
-    border: 1px solid rgba(245, 158, 11, 0.35);
-    border-radius: 6px;
-    padding: 6px 8px;
-    margin-bottom: 6px;
+
+  /* 表格系统 */
+  .table-wrap {
+    overflow-x: auto;
+    border-radius: 12px;
+    border: 1px solid var(--glass-border);
+    background: rgba(9, 14, 26, 0.38);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
+  th, td {
+    text-align: left;
+    padding: 12px 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    vertical-align: middle;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr {
+    transition: background 0.15s ease;
+  }
+  tbody tr:hover {
+    background: rgba(255, 255, 255, 0.03);
+  }
+  th {
+    color: var(--muted);
+    font-weight: 500;
+    font-size: 12px;
+    background: rgba(15, 23, 42, 0.55);
+    white-space: nowrap;
+  }
+
+  /* 账户表内紧凑冷却胶囊 */
+  .cooldown-pill-box {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 3px;
+    background: rgba(245, 158, 11, 0.11);
+    border: 1px solid rgba(251, 191, 36, 0.30);
+    border-radius: 8px;
+    padding: 6px 10px;
+    margin: 2px 0;
+    max-width: 280px;
+  }
+  .cooldown-pill-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
     font-size: 12px;
   }
-  .cooldown-item:last-child { margin-bottom: 0; }
+  .cooldown-pill-time {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    color: #fde68a;
+  }
+  .cooldown-pill-reason {
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 256px;
+  }
+
   .proxy-editor {
     display: flex;
     gap: 6px;
     align-items: center;
-    flex-wrap: wrap;
-    margin-top: 6px;
+    flex-wrap: nowrap;
   }
+
+  /* 终端日志框 */
   .logs {
-    background: #090d16;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 12px;
+    background: rgba(6, 9, 18, 0.72);
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    padding: 12px 14px;
     max-height: 280px;
     overflow-y: auto;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 12px;
+    font-variant-numeric: tabular-nums;
   }
-  .log-line { padding: 3px 0; border-bottom: 1px dashed rgba(255,255,255,0.05); }
+  .log-line {
+    padding: 4px 0;
+    border-bottom: 1px dashed rgba(255, 255, 255, 0.05);
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    line-height: 1.45;
+  }
+  .log-line:last-child { border-bottom: none; }
+  .log-time { color: var(--muted); white-space: nowrap; font-size: 11px; }
+  .log-lvl {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+  .log-lvl.INFO { background: rgba(59, 130, 246, 0.16); color: #93c5fd; }
+  .log-lvl.WARN { background: rgba(245, 158, 11, 0.18); color: #fcd34d; }
+  .log-lvl.ERROR { background: rgba(239, 68, 68, 0.2); color: #fca5a5; }
+  .log-src { color: #38bdf8; white-space: nowrap; font-size: 11px; }
+  .log-msg { color: var(--text-secondary); word-break: break-all; }
+
+  /* 悬浮毛玻璃 Toast（零页面抖动） */
   .toast {
-    padding: 10px 14px;
-    border-radius: 6px;
-    margin-bottom: 16px;
+    position: fixed;
+    top: 22px;
+    right: 24px;
+    z-index: 9999;
+    max-width: 440px;
+    padding: 12px 16px;
+    border-radius: 12px;
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    box-shadow: 0 20px 40px -12px rgba(0, 0, 0, 0.65);
     display: none;
     font-size: 13px;
+    font-weight: 500;
+    animation: toastIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
   }
 </style>
 </head>
 <body>
+<div id="toast" class="toast"></div>
+
 <div class="container">
-  <header>
+  <header class="top-header">
     <div>
-      <h1>
-        AIStudio2API 插件控制台
-        <span id="stateBadge" class="badge">加载中</span>
-        <span id="waaBadge" class="badge">WAA: spidermonkey</span>
-      </h1>
-      <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">
-        Google AI Studio (MakerSuite + Build) · 进程内 SpiderMonkey BotGuard VM · 支持 OpenAI / Responses / Claude / Gemini
+      <div class="brand-row">
+        <h1>AIStudio2API 插件控制台</h1>
+        <span id="stateBadge" class="badge"><span class="status-dot"></span>加载中</span>
+        <span id="waaBadge" class="badge accent">WAA: spidermonkey</span>
+      </div>
+      <div class="subtitle">
+        Google AI Studio (Playground + Build) · 进程内 SpiderMonkey BotGuard VM · 原生支持 OpenAI / Responses / Claude / Gemini
       </div>
     </div>
     <div class="auth-bar">
       <span id="keyStatusBadge" class="badge">只读模式 (查看无需密钥)</span>
-      <input type="password" id="mgmtKey" placeholder="输入 CPA 管理密钥 (仅修改操作需要)" style="width: 250px;" oninput="onKeyInputChanged()" />
+      <input type="password" id="mgmtKey" placeholder="输入 CPA 管理密钥 (仅修改操作需要)" style="width: 240px;" oninput="onKeyInputChanged()" />
       <button onclick="saveKeyAndReload()">保存密钥</button>
     </div>
   </header>
 
-  <div id="toast" class="toast"></div>
-
-  <div class="grid">
-    <div class="card" style="margin-bottom:0">
-      <div class="stat-label">服务状态</div>
+  <!-- 顶部指标卡 -->
+  <div class="stats-grid">
+    <div class="glass-card stat-card">
+      <div class="stat-header">
+        <span>生成服务状态</span>
+        <span class="status-dot" id="statStateDot" style="color:var(--success);"></span>
+      </div>
       <div class="stat-value" id="statState">-</div>
-      <div style="margin-top: 10px; display: flex; gap: 8px;">
-        <button id="serviceToggleBtn" class="success" onclick="toggleService()">启动服务</button>
+      <div class="stat-footer">
+        <button id="serviceToggleBtn" class="success sm" onclick="toggleService()" style="width:100%;">启动服务</button>
       </div>
     </div>
-    <div class="card" style="margin-bottom:0">
-      <div class="stat-label">可用 / 总账户数</div>
+
+    <div class="glass-card stat-card">
+      <div class="stat-header">
+        <span>就绪 / 总账户数</span>
+      </div>
       <div class="stat-value" id="statAccounts">0 / 0</div>
-      <div style="margin-top: 10px;">
-        <button class="secondary" onclick="syncAuthFiles()">同步至 CPA 凭证目录</button>
+      <div class="stat-footer">
+        <button class="secondary sm" onclick="syncAuthFiles()" style="width:100%;">同步至 CPA 凭证目录</button>
       </div>
     </div>
-    <div class="card" style="margin-bottom:0">
-      <div class="stat-label">已发现 AI Studio 模型</div>
+
+    <div class="glass-card stat-card">
+      <div class="stat-header">
+        <span>已发现 AI Studio 模型</span>
+      </div>
       <div class="stat-value" id="statModels">0</div>
-      <div style="font-size:12px; color:var(--muted); margin-top:8px;">含 Playground 与 Build 通道原生模型</div>
+      <div class="stat-footer">含 Playground 与 Build 通道原生模型</div>
     </div>
-    <div class="card" style="margin-bottom:0">
-      <div class="stat-label">冷却中 / 需重登账户</div>
+
+    <div class="glass-card stat-card">
+      <div class="stat-header">
+        <span>冷却中 / 需重登账户</span>
+      </div>
       <div class="stat-value" id="statCooldown">0 / 0</div>
-      <div style="font-size:12px; color:var(--muted); margin-top:8px;">支持在下方按单账号查看结束时间并单独解除</div>
+      <div class="stat-footer">支持按单账号查看结束时间并单独解除</div>
     </div>
   </div>
 
-  <div class="card">
-    <h3 style="margin-top:0; margin-bottom:14px; font-size:16px;">添加 / 登录 Google AI Studio 账户</h3>
+  <!-- 添加 / 登录 Google AI Studio 账户（左右双栏毛玻璃卡片） -->
+  <div class="glass-card">
+    <div class="section-header">
+      <h2 class="section-title">添加 / 登录 Google AI Studio 账户</h2>
+      <span style="font-size:12px; color:var(--muted);">两种方式均拥有各自独立的单账户代理设置，互不干扰</span>
+    </div>
 
-    <div class="method-panel">
-      <div class="method-title">
-        <span>方式一：本机 Chrome 无痕浏览器登录</span>
-        <span class="badge success">推荐</span>
-      </div>
-      <div id="chromeLoginHint" class="method-desc">
-        弹出隔离的本机 Chrome 窗口（独立临时目录，不读取本机已有浏览器数据），完成新号条款确认与 Google Drive 授权后自动拉取凭证并关闭窗口。
-      </div>
-      <div class="row">
-        <input type="text" id="chromeLoginProxy" placeholder="单账户代理 (可选，如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080，留空则使用全局/直连)" style="flex:1; min-width:280px;" />
-        <button id="chromeLoginBtn" class="success" onclick="loginWithChromeBrowser()" style="white-space:nowrap; padding:9px 18px; font-weight:600;">
-          🌐 启动本机 Chrome 无痕登录
+    <div class="login-grid">
+      <!-- 方式一：本机 Chrome 无痕登录 -->
+      <div class="method-panel recommended">
+        <div>
+          <div class="method-title">
+            <span>方式一：本机 Chrome 独立窗口登录</span>
+            <span class="badge success">推荐 · 自动完成条款与 Drive 授权</span>
+          </div>
+          <div id="chromeLoginHint" class="method-desc">
+            启动隔离的本机 Chrome 窗口（独立临时目录，不读取本机已有浏览器数据），完成新号条款确认与 Google Drive 授权后自动拉取凭证并关闭窗口。
+          </div>
+          <div style="margin-bottom: 12px;">
+            <label class="field-label" for="chromeLoginProxy">无痕登录专属单账户代理（可选，留空则使用全局或直连）</label>
+            <input type="text" id="chromeLoginProxy" placeholder="例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" style="width:100%;" />
+          </div>
+        </div>
+        <button id="chromeLoginBtn" class="success" onclick="loginWithChromeBrowser()" style="width:100%; padding:10px 18px; font-weight:600;">
+          启动本机 Chrome 无痕登录
         </button>
       </div>
-    </div>
 
-    <div class="method-panel">
-      <div class="method-title">
-        <span>方式二：手动粘贴 Cookie / StorageState 导入</span>
-        <span class="badge">适用于无桌面或远程服务器</span>
-      </div>
-      <div class="method-desc">
-        支持直接粘贴请求头 Cookie（含 SAPISID 与 __Secure-1PSID）、Cookie-Editor JSON 数组或 Playwright storage-state.json。
-      </div>
-      <div class="row">
-        <input type="text" id="accLabel" placeholder="账户邮箱 (留空将自动从 Cookie 识别)" style="flex:1; min-width:200px;" />
-        <input type="text" id="cookieProxy" placeholder="单账户代理 (可选，如 http://127.0.0.1:7890，留空使用全局/直连)" style="flex:1; min-width:260px;" />
-        <input type="number" id="accAuthUser" placeholder="authuser 序号 (默认 0)" value="0" style="width:130px;" title="Google 多账号会话序号 (authuser)" />
-      </div>
-      <div class="row">
-        <textarea id="accCookies" rows="3" style="width:100%; font-family:monospace;" placeholder="粘贴浏览器请求头 Cookie (需包含 SAPISID 与 __Secure-1PSID)、Cookie-Editor JSON 数组、或 Playwright storage-state.json 内容..."></textarea>
-      </div>
-      <div class="row">
-        <button onclick="importCookieAccount()">导入 Cookie / StorageState 账户</button>
-        <button class="secondary" onclick="discoverCookieAccounts()">预览 Cookie 内登录的谷歌账号</button>
+      <!-- 方式二：手动粘贴 Cookie / StorageState -->
+      <div class="method-panel">
+        <div>
+          <div class="method-title">
+            <span>方式二：手动粘贴 Cookie / StorageState 导入</span>
+            <span class="badge">适用于无桌面 / 远程服务器</span>
+          </div>
+          <div class="method-desc">
+            支持粘贴请求头 Cookie（含 SAPISID 与 __Secure-1PSID）、Cookie-Editor JSON 数组或 Playwright storage-state.json。
+          </div>
+          <div class="row">
+            <input type="text" id="accLabel" placeholder="账户邮箱 (留空自动从 Cookie 识别)" style="flex:1; min-width:170px;" />
+            <input type="text" id="cookieProxy" placeholder="此账号代理 (可选，如 http://127.0.0.1:7890)" style="flex:1; min-width:190px;" />
+            <input type="number" id="accAuthUser" placeholder="authuser" value="0" style="width:82px;" title="Google 多账号会话序号 (authuser，默认 0)" />
+          </div>
+          <div class="row">
+            <textarea id="accCookies" rows="2" style="width:100%; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px;" placeholder="在此粘贴 Cookie 请求头、Cookie-Editor JSON 或 storage-state.json 内容..."></textarea>
+          </div>
+        </div>
+        <div class="row" style="margin-top:4px;">
+          <button onclick="importCookieAccount()" style="flex:1;">导入 Cookie / StorageState 账户</button>
+          <button class="secondary" onclick="discoverCookieAccounts()">预览 Cookie 内账号</button>
+        </div>
       </div>
     </div>
   </div>
 
-  <div class="card">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+  <!-- 账户池与 WAA 状态（排在上方） -->
+  <div class="glass-card">
+    <div class="section-header">
       <div style="display:flex; align-items:center; gap:10px;">
-        <h3 style="margin:0; font-size:16px;">冷却中账户一览</h3>
-        <span id="cooldownCountBadge" class="badge">0 条冷却</span>
+        <h2 class="section-title">账户池与 WAA 状态</h2>
+        <span id="accountPoolBadge" class="badge">0 个账户</span>
       </div>
-      <span style="font-size:12px; color:var(--muted);">展示各账户冷却原因、精确恢复时间与剩余倒计时</span>
+      <button class="secondary sm" onclick="loadStatus()">刷新列表</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>账户邮箱 (ID)</th>
+            <th>状态</th>
+            <th>权益等级 (Tier)</th>
+            <th>可用模型</th>
+            <th>单账户代理 (支持随时修改)</th>
+            <th>冷却结束时间 / 状态摘要</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="accountsBody">
+          <tr><td colspan="7" style="color:var(--muted); text-align:center; padding:24px;">暂无账户数据</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 冷却中账户一览（排在账户池与 WAA 状态下方） -->
+  <div class="glass-card">
+    <div class="section-header">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <h2 class="section-title">冷却中账户一览</h2>
+        <span id="cooldownCountBadge" class="badge success">0 项冷却</span>
+      </div>
+      <span style="font-size:12px; color:var(--muted);">展示各账户冷却范围、精确恢复时间、实时倒计时与完整上游原因</span>
     </div>
     <div id="cooldownOverviewBox">
       <div style="color:var(--muted); font-size:13px;">当前没有处于冷却中的账户或模型</div>
     </div>
   </div>
 
-  <div class="card">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-      <h3 style="margin:0; font-size:16px;">账户池与 WAA 状态</h3>
-      <button class="secondary" onclick="loadStatus()">刷新列表</button>
-    </div>
-    <table>
-      <thead>
-        <tr>
-          <th>账户邮箱 (ID)</th>
-          <th>状态</th>
-          <th>权益等级 (Tier)</th>
-          <th>模型数</th>
-          <th>单账户代理</th>
-          <th>冷却结束时间 / 状态详情</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody id="accountsBody">
-        <tr><td colspan="7" style="color:var(--muted);">暂无账户数据</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <div class="card">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-      <h3 style="margin:0; font-size:16px;">运行日志</h3>
-      <button class="secondary" onclick="loadLogs()">刷新日志</button>
+  <!-- 运行日志 -->
+  <div class="glass-card" style="margin-bottom:0;">
+    <div class="section-header">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <h2 class="section-title">运行日志</h2>
+        <span style="font-size:12px; color:var(--muted);">最近 80 条实时事件</span>
+      </div>
+      <button class="secondary sm" onclick="loadLogs()">刷新日志</button>
     </div>
     <div class="logs" id="logsBox">等待连接...</div>
   </div>
@@ -299,6 +674,7 @@ let latestAccounts = [];
 let latestCooldowns = [];
 let editingProxyAccountId = null;
 let editingProxyDraft = '';
+let toastTimer = null;
 
 function resourceUrl(view) {
   const base = window.location.pathname && window.location.pathname !== '/'
@@ -391,11 +767,14 @@ function saveKeyAndReload() {
 
 function showToast(msg, isErr) {
   const el = document.getElementById('toast');
+  if (!el) return;
+  if (toastTimer) clearTimeout(toastTimer);
   el.style.display = 'block';
-  el.style.background = isErr ? 'rgba(239, 68, 68, 0.2)' : 'rgba(16, 185, 129, 0.2)';
-  el.style.color = isErr ? '#fca5a5' : '#6ee7b7';
+  el.style.background = isErr ? 'rgba(127, 29, 29, 0.82)' : 'rgba(6, 78, 59, 0.82)';
+  el.style.border = isErr ? '1px solid rgba(248, 113, 113, 0.45)' : '1px solid rgba(52, 211, 153, 0.45)';
+  el.style.color = isErr ? '#fecaca' : '#a7f3d0';
   el.textContent = msg;
-  setTimeout(() => { el.style.display = 'none'; }, 5000);
+  toastTimer = setTimeout(() => { el.style.display = 'none'; }, 4800);
 }
 
 async function apiCall(path, method = 'GET', body = null, extraHeaders = null) {
@@ -445,39 +824,49 @@ async function loadStatus() {
     const state = (st.state || 'STOPPED').toUpperCase();
     const isRunning = Boolean(st.running || state === 'RUNNING');
     document.getElementById('statState').textContent = state;
+    const dot = document.getElementById('statStateDot');
+    if (dot) dot.style.color = isRunning ? 'var(--success)' : 'var(--warning)';
     const badge = document.getElementById('stateBadge');
-    badge.textContent = state;
+    badge.innerHTML = '<span class="status-dot"></span>' + escapeHtml(state);
     badge.className = 'badge ' + (isRunning ? 'success' : 'warning');
+
     const toggleBtn = document.getElementById('serviceToggleBtn');
     if (toggleBtn) {
       toggleBtn.dataset.running = isRunning ? 'true' : 'false';
       if (state === 'LAUNCHING' || state === 'STOPPING') {
         toggleBtn.textContent = state === 'LAUNCHING' ? '启动中...' : '停止中...';
-        toggleBtn.className = 'secondary';
+        toggleBtn.className = 'secondary sm';
         toggleBtn.disabled = true;
       } else if (isRunning) {
-        toggleBtn.textContent = '停止服务';
-        toggleBtn.className = 'danger';
+        toggleBtn.textContent = '停止生成服务';
+        toggleBtn.className = 'danger sm';
         toggleBtn.disabled = false;
       } else {
-        toggleBtn.textContent = '启动服务';
-        toggleBtn.className = 'success';
+        toggleBtn.textContent = '启动生成服务';
+        toggleBtn.className = 'success sm';
         toggleBtn.disabled = false;
       }
     }
     document.getElementById('waaBadge').textContent = 'WAA: ' + (data.waa_backend || 'spidermonkey');
     document.getElementById('statAccounts').textContent = ((counts.ready || 0) + (counts.busy || 0)) + ' / ' + (counts.total || 0);
     document.getElementById('statModels').textContent = data.models_count || 0;
+
     latestAccounts = data.accounts || [];
     latestCooldowns = deduplicateCooldowns(data.cooldowns || []);
+    const poolBadge = document.getElementById('accountPoolBadge');
+    if (poolBadge) {
+      poolBadge.textContent = latestAccounts.length + ' 个账户';
+    }
+
     const cooldownAccountsSet = new Set(latestCooldowns.map(c => String(c.account_id || '').toLowerCase()));
     for (const acc of latestAccounts) {
       if (acc.state === 'cooldown') cooldownAccountsSet.add(String(acc.id || '').toLowerCase());
     }
     const effectiveCooldownCount = Math.max(counts.cooldown || 0, cooldownAccountsSet.size);
     document.getElementById('statCooldown').textContent = effectiveCooldownCount + ' / ' + (counts.auth_required || 0);
-    renderCooldownOverview(latestCooldowns);
+
     renderAccounts(latestAccounts, latestCooldowns);
+    renderCooldownOverview(latestCooldowns);
   } catch (e) {
     showToast('读取状态失败: ' + e.message, true);
   }
@@ -523,61 +912,15 @@ function formatCooldownRemaining(untilStr) {
   const h = Math.floor(diffSec / 3600);
   const m = Math.floor((diffSec % 3600) / 60);
   const s = diffSec % 60;
-  if (h > 0) return '剩余 ' + h + '小时' + m + '分' + s + '秒';
+  if (h > 0) return '剩余 ' + h + '小时' + m + '分' + String(s).padStart(2, '0') + '秒';
   if (m > 0) return '剩余 ' + m + '分' + String(s).padStart(2, '0') + '秒';
   return '剩余 ' + s + '秒';
-}
-
-function renderCooldownOverview(cooldowns) {
-  const box = document.getElementById('cooldownOverviewBox');
-  const badge = document.getElementById('cooldownCountBadge');
-  if (!box) return;
-  const active = (cooldowns || []).filter(c => {
-    const t = new Date(c.until).getTime();
-    return isNaN(t) || t > Date.now() - 1000;
-  });
-  if (badge) {
-    badge.textContent = active.length ? (active.length + ' 项冷却中') : '0 项冷却';
-    badge.className = 'badge ' + (active.length ? 'warning' : 'success');
-  }
-  if (!active.length) {
-    box.innerHTML = '<div style="color:var(--muted); font-size:13px;">✓ 当前没有处于冷却中的账户或模型</div>';
-    return;
-  }
-  box.innerHTML = '<table>' +
-    '<thead><tr>' +
-      '<th>账户邮箱</th>' +
-      '<th>冷却范围 / 模型</th>' +
-      '<th>冷却结束时间</th>' +
-      '<th>剩余时间</th>' +
-      '<th>冷却原因</th>' +
-      '<th>操作</th>' +
-    '</tr></thead>' +
-    '<tbody>' +
-    active.map(c => {
-      const endText = formatCooldownEndTime(c.until);
-      const remText = formatCooldownRemaining(c.until);
-      const scopeBadge = c.scope === '*'
-        ? '<span class="badge warning">全局冷却 (全部模型)</span>'
-        : '<span class="badge">' + escapeHtml(c.model_id) + '</span> <span style="font-size:11px; color:var(--muted);">[' + escapeHtml(c.channel) + ']</span>';
-      return '<tr>' +
-        '<td><strong>' + escapeHtml(c.account_id) + '</strong></td>' +
-        '<td>' + scopeBadge + '</td>' +
-        '<td style="font-family:monospace; color:#fbbf24; font-weight:600;">' + escapeHtml(endText) + '</td>' +
-        '<td><span class="badge warning" data-until="' + escapeHtml(c.until) + '">' + escapeHtml(remText) + '</span></td>' +
-        '<td style="max-width:280px; word-break:break-all; color:var(--muted);">' + escapeHtml(c.reason || '-') + '</td>' +
-        '<td style="display:flex; gap:6px; flex-wrap:wrap;">' +
-          '<button class="warning sm" onclick="clearCooldowns(\'' + escapeJs(c.account_id) + '\', \'' + escapeJs(c.scope) + '\')">清除此项冷却</button>' +
-        '</td>' +
-      '</tr>';
-    }).join('') +
-    '</tbody></table>';
 }
 
 function renderAccounts(accounts, cooldowns) {
   const tbody = document.getElementById('accountsBody');
   if (!accounts.length) {
-    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted);">暂无已导入账户，请点击上方「启动本机 Chrome 无痕登录」或粘贴 Cookie 导入</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted); text-align:center; padding:26px;">暂无已导入账户，请使用上方「本机 Chrome 独立窗口登录」或粘贴 Cookie 导入</td></tr>';
     return;
   }
   const cdByAccount = new Map();
@@ -600,56 +943,63 @@ function renderAccounts(accounts, cooldowns) {
     if (editingProxyAccountId === acc.id) {
       proxyCell =
         '<div class="proxy-editor">' +
-          '<input type="text" id="proxyInput_' + escapeHtml(acc.id) + '" value="' + escapeHtml(editingProxyDraft) + '" placeholder="如 http://127.0.0.1:7890 (留空直连)" style="width:210px; padding:5px 8px; font-size:12px;" />' +
+          '<input type="text" id="proxyInput_' + escapeHtml(acc.id) + '" value="' + escapeHtml(editingProxyDraft) + '" placeholder="http://127.0.0.1:7890 (留空直连)" style="width:195px; padding:5px 9px; font-size:12px;" />' +
           '<button class="success sm" onclick="saveAccountProxy(\'' + escapeJs(acc.id) + '\')">保存</button>' +
-          '<button class="secondary sm" onclick="saveAccountProxy(\'' + escapeJs(acc.id) + '\', \'\')">改为直连</button>' +
+          '<button class="secondary sm" onclick="saveAccountProxy(\'' + escapeJs(acc.id) + '\', \'\')">直连</button>' +
           '<button class="secondary sm" onclick="cancelEditProxy()">取消</button>' +
         '</div>';
     } else {
-      const proxyLabel = acc.proxy ? escapeHtml(acc.proxy) : '<span style="color:var(--muted);">全局/直连</span>';
-      const egressHint = acc.egress && acc.egress !== acc.proxy ? '<div style="font-size:11px; color:var(--muted);">出口: ' + escapeHtml(acc.egress) + '</div>' : '';
+      const proxyLabel = acc.proxy
+        ? '<span style="color:#93c5fd; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px;">' + escapeHtml(acc.proxy) + '</span>'
+        : '<span style="color:var(--muted);">全局 / 直连</span>';
+      const egressHint = acc.egress && acc.egress !== acc.proxy
+        ? '<div style="font-size:11px; color:var(--muted);">出口: ' + escapeHtml(acc.egress) + '</div>'
+        : '';
       proxyCell =
-        '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' +
+        '<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; min-width:160px;">' +
           '<div>' + proxyLabel + egressHint + '</div>' +
           '<button class="secondary sm" onclick="openEditProxy(\'' + escapeJs(acc.id) + '\', \'' + escapeJs(acc.proxy || '') + '\')">设置代理</button>' +
         '</div>';
     }
 
-    // 冷却结束时间与错误详情列
+    // 紧凑冷却结束时间摘要（完整长原因展示在下方「冷却中账户一览」）
     let detailParts = [];
     for (const c of accCooldowns) {
       const endText = formatCooldownEndTime(c.until);
       const remText = formatCooldownRemaining(c.until);
       const title = c.scope === '*' ? '全局冷却' : c.model_id;
       detailParts.push(
-        '<div class="cooldown-item">' +
-          '<div style="display:flex; justify-content:space-between; gap:6px; align-items:center;">' +
-            '<strong style="color:#fbbf24;">⏳ ' + escapeHtml(title) + '</strong>' +
-            '<span class="badge warning" data-until="' + escapeHtml(c.until) + '" style="font-size:11px; padding:1px 6px;">' + escapeHtml(remText) + '</span>' +
+        '<div class="cooldown-pill-box" title="' + escapeHtml(c.reason || '') + '">' +
+          '<div class="cooldown-pill-top">' +
+            '<strong style="color:#fbbf24;">' + escapeHtml(title) + '</strong>' +
+            '<span class="badge warning" data-until="' + escapeHtml(c.until) + '" style="font-size:10px; padding:1px 7px;">' + escapeHtml(remText) + '</span>' +
           '</div>' +
-          '<div style="color:#fde68a; font-family:monospace; margin-top:2px;">结束时间: ' + escapeHtml(endText) + '</div>' +
-          (c.reason ? '<div style="color:var(--muted); margin-top:2px;">原因: ' + escapeHtml(c.reason) + '</div>' : '') +
+          '<div class="cooldown-pill-time">结束: ' + escapeHtml(endText) + '</div>' +
+          (c.reason ? '<div class="cooldown-pill-reason">' + escapeHtml(c.reason) + '</div>' : '') +
         '</div>'
       );
     }
     const rawMsg = acc.message || acc.cooldown_reason || acc.auth_error || acc.catalog_error || '';
     if (rawMsg && !accCooldowns.some(c => c.reason === rawMsg)) {
-      detailParts.push('<div style="color:var(--muted);">' + escapeHtml(rawMsg) + '</div>');
+      detailParts.push('<div style="color:var(--muted); font-size:12px; max-width:260px;">' + escapeHtml(rawMsg) + '</div>');
     }
-    const detailHtml = detailParts.length ? detailParts.join('') : '<span style="color:var(--muted);">-</span>';
+    const detailHtml = detailParts.length ? detailParts.join('') : '<span style="color:var(--muted);">正常就绪</span>';
 
     const clearCooldownBtn = hasCooldown
       ? '<button class="warning sm" onclick="clearCooldowns(\'' + escapeJs(acc.id) + '\', \'\')">清除冷却</button>'
       : '';
 
+    const tierText = (acc.benefit_tier || 'FREE').toUpperCase();
+    const tierBadgeClass = tierText.includes('PRO') || tierText.includes('PAID') || tierText.includes('ULTRA') ? 'accent' : '';
+
     return '<tr>' +
-      '<td><strong>' + escapeHtml(acc.id) + '</strong></td>' +
-      '<td><span class="badge ' + badgeClass + '">' + escapeHtml(acc.state) + '</span></td>' +
-      '<td><span class="badge">' + escapeHtml(acc.benefit_tier || 'FREE') + '</span></td>' +
-      '<td>' + (acc.models ? acc.models.length : 0) + '</td>' +
+      '<td><strong style="color:#fff;">' + escapeHtml(acc.id) + '</strong></td>' +
+      '<td><span class="badge ' + badgeClass + '"><span class="status-dot"></span>' + escapeHtml(acc.state) + '</span></td>' +
+      '<td><span class="badge ' + tierBadgeClass + '">' + escapeHtml(acc.benefit_tier || 'FREE') + '</span></td>' +
+      '<td style="font-weight:600;">' + (acc.models ? acc.models.length : 0) + '</td>' +
       '<td>' + proxyCell + '</td>' +
-      '<td style="max-width:310px; word-break:break-all;">' + detailHtml + '</td>' +
-      '<td><div style="display:flex; gap:6px; flex-wrap:wrap;">' +
+      '<td>' + detailHtml + '</td>' +
+      '<td><div style="display:flex; gap:6px; flex-wrap:nowrap; align-items:center;">' +
         clearCooldownBtn +
         '<button class="sm" onclick="reloginAccount(\'' + escapeJs(acc.id) + '\', \'' + escapeJs(acc.proxy || '') + '\')">无痕重登</button>' +
         '<button class="secondary sm" onclick="refreshAccount(\'' + escapeJs(acc.id) + '\')">刷新目录</button>' +
@@ -658,6 +1008,52 @@ function renderAccounts(accounts, cooldowns) {
       '</div></td>' +
     '</tr>';
   }).join('');
+}
+
+function renderCooldownOverview(cooldowns) {
+  const box = document.getElementById('cooldownOverviewBox');
+  const badge = document.getElementById('cooldownCountBadge');
+  if (!box) return;
+  const active = (cooldowns || []).filter(c => {
+    const t = new Date(c.until).getTime();
+    return isNaN(t) || t > Date.now() - 1000;
+  });
+  if (badge) {
+    badge.textContent = active.length ? (active.length + ' 项冷却中') : '0 项冷却';
+    badge.className = 'badge ' + (active.length ? 'warning' : 'success');
+  }
+  if (!active.length) {
+    box.innerHTML = '<div style="padding:14px 16px; border-radius:10px; background:rgba(16,185,129,0.07); border:1px solid rgba(52,211,153,0.18); color:#6ee7b7; font-size:13px;">所有账户与模型均处于正常可用状态，无冷却限制</div>';
+    return;
+  }
+  box.innerHTML = '<div class="table-wrap"><table>' +
+    '<thead><tr>' +
+      '<th>账户邮箱</th>' +
+      '<th>冷却范围 / 模型</th>' +
+      '<th>冷却结束时间</th>' +
+      '<th>剩余恢复倒计时</th>' +
+      '<th>冷却原因详情</th>' +
+      '<th>操作</th>' +
+    '</tr></thead>' +
+    '<tbody>' +
+    active.map(c => {
+      const endText = formatCooldownEndTime(c.until);
+      const remText = formatCooldownRemaining(c.until);
+      const scopeBadge = c.scope === '*'
+        ? '<span class="badge warning">全局冷却 (全部模型)</span>'
+        : '<span class="badge accent">' + escapeHtml(c.model_id) + '</span> <span style="font-size:11px; color:var(--muted);">[' + escapeHtml(c.channel) + ']</span>';
+      return '<tr>' +
+        '<td><strong style="color:#fff;">' + escapeHtml(c.account_id) + '</strong></td>' +
+        '<td style="white-space:nowrap;">' + scopeBadge + '</td>' +
+        '<td style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:#fde68a; font-weight:600; white-space:nowrap;">' + escapeHtml(endText) + '</td>' +
+        '<td style="white-space:nowrap;"><span class="badge warning" data-until="' + escapeHtml(c.until) + '">' + escapeHtml(remText) + '</span></td>' +
+        '<td style="max-width:420px; word-break:break-word; color:var(--text-secondary); font-size:12px; line-height:1.5;">' + escapeHtml(c.reason || '-') + '</td>' +
+        '<td style="white-space:nowrap;">' +
+          '<button class="warning sm" onclick="clearCooldowns(\'' + escapeJs(c.account_id) + '\', \'' + escapeJs(c.scope) + '\')">清除此项冷却</button>' +
+        '</td>' +
+      '</tr>';
+    }).join('') +
+    '</tbody></table></div>';
 }
 
 function openEditProxy(accountId, currentProxy) {
@@ -706,6 +1102,7 @@ async function saveAccountProxy(accountId, overrideProxy) {
     showToast('更新代理失败: ' + e.message, true);
   }
 }
+
 async function toggleService() {
   const toggleBtn = document.getElementById('serviceToggleBtn');
   if (toggleBtn && toggleBtn.dataset.running === 'true') {
@@ -749,35 +1146,34 @@ async function stopService() {
   }
 }
 
-
 async function loginWithChromeBrowser() {
   const btn = document.getElementById('chromeLoginBtn');
   const proxyInput = document.getElementById('chromeLoginProxy');
   const proxy = proxyInput ? proxyInput.value.trim() : '';
   if (btn) {
     btn.disabled = true;
-    btn.textContent = '⏳ 正在等待 Chrome 无痕窗口登录...';
+    btn.textContent = '正在等待 Chrome 窗口完成登录与授权...';
   }
   try {
-    showToast('已启动本机 Chrome 无痕窗口，请在弹出的浏览器中登录 Google 账号并完成 AI Studio 授权，完成后窗口将自动关闭...', false);
+    showToast('已启动本机 Chrome 独立窗口，请登录 Google 账号并完成 AI Studio 授权，完成后窗口将自动关闭...', false);
     const res = await apiCall('/v0/management/aistudio2api/accounts/login-browser', 'POST', { proxy });
     const accId = res.account ? res.account.id : '';
-    showToast('Chrome 无痕登录成功，已自动导入账户: ' + accId, false);
+    showToast('Chrome 登录成功，已自动导入账户: ' + accId, false);
     await loadStatus();
     loadLogs();
   } catch (e) {
-    showToast('Chrome 无痕登录未完成: ' + e.message, true);
+    showToast('Chrome 登录未完成: ' + e.message, true);
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.textContent = '🌐 启动本机 Chrome 无痕登录';
+      btn.textContent = '启动本机 Chrome 无痕登录';
     }
   }
 }
 
 async function reloginAccount(id, proxy) {
   try {
-    showToast('已为账户 ' + id + ' 启动本机 Chrome 无痕窗口，请使用该谷歌账号完成登录...', false);
+    showToast('已为账户 ' + id + ' 启动本机 Chrome 独立窗口，请使用该谷歌账号完成登录...', false);
     const res = await apiCall('/v0/management/aistudio2api/accounts/relogin', 'POST', { account_id: id, proxy: proxy || '' });
     showToast('账户 ' + (res.account ? res.account.id : id) + ' 重新登录并更新成功！', false);
     await loadStatus();
@@ -786,6 +1182,7 @@ async function reloginAccount(id, proxy) {
     showToast('重新登录失败: ' + e.message, true);
   }
 }
+
 async function importCookieAccount() {
   const cookies = document.getElementById('accCookies').value.trim();
   if (!cookies) {
@@ -887,6 +1284,15 @@ async function clearCooldowns(accountId, scope = '') {
   }
 }
 
+function formatLogTime(isoStr) {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return String(isoStr);
+  const pad = n => String(n).padStart(2, '0');
+  const ms = String(d.getMilliseconds()).padStart(3, '0');
+  return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) + '.' + ms;
+}
+
 async function loadLogs() {
   try {
     const res = await apiCall(resourceUrl('logs'), 'GET', null, { 'X-AIStudio-view': 'logs' });
@@ -896,12 +1302,15 @@ async function loadLogs() {
       box.innerHTML = '<div style="color:var(--muted);">暂无日志</div>';
       return;
     }
-    box.innerHTML = logs.slice(-80).reverse().map(l =>
-      '<div class="log-line"><span style="color:var(--muted);">[' + escapeHtml(l.time || '') + ']</span> ' +
-      '<strong>[' + escapeHtml(l.level || 'INFO') + ']</strong> ' +
-      '<span style="color:#60a5fa;">[' + escapeHtml(l.source || '') + ']</span> ' +
-      escapeHtml(l.message || '') + '</div>'
-    ).join('');
+    box.innerHTML = logs.slice(-80).reverse().map(l => {
+      const lvl = String(l.level || 'INFO').toUpperCase();
+      return '<div class="log-line">' +
+        '<span class="log-time">' + escapeHtml(formatLogTime(l.time)) + '</span>' +
+        '<span class="log-lvl ' + escapeHtml(lvl) + '">' + escapeHtml(lvl) + '</span>' +
+        '<span class="log-src">[' + escapeHtml(l.source || 'service') + ']</span>' +
+        '<span class="log-msg">' + escapeHtml(l.message || '') + '</span>' +
+      '</div>';
+    }).join('');
   } catch (_) {}
 }
 
