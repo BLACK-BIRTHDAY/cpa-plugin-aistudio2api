@@ -193,6 +193,10 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 
 
 	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/login-browser":
+		if !p.chromeLogin.TryLock() {
+			return jsonManagementResponse(http.StatusConflict, map[string]any{"error": "已有一个本机 Chrome 无痕登录窗口正在进行中，请在该窗口完成登录或关闭它后重试"}), nil
+		}
+		defer p.chromeLogin.Unlock()
 		var input api.AccountCreateInput
 		if len(req.Body) > 0 {
 			_ = json.Unmarshal(req.Body, &input)
@@ -204,8 +208,11 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		_ = p.SyncAccountToHostAuth(req.HostCallbackID, created)
 		go func() { _ = rt.EnsureRunning(p.ctx) }()
 		return jsonManagementResponse(http.StatusCreated, map[string]any{"account": created}), nil
-
 	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/relogin":
+		if !p.chromeLogin.TryLock() {
+			return jsonManagementResponse(http.StatusConflict, map[string]any{"error": "已有一个本机 Chrome 无痕登录窗口正在进行中，请在该窗口完成登录或关闭它后重试"}), nil
+		}
+		defer p.chromeLogin.Unlock()
 		var body struct {
 			AccountID string `json:"account_id"`
 			Proxy     string `json:"proxy"`

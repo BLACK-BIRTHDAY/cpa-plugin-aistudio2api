@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -283,6 +284,16 @@ func (p *Plugin) upsertAccountInRuntime(
 	return created, nil
 }
 
+func resolveHostOrigin(baseURL string) string {
+	trimmed := strings.TrimSpace(baseURL)
+	if trimmed != "" {
+		if parsed, err := url.Parse(trimmed); err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" {
+			return parsed.Scheme + "://" + parsed.Host
+		}
+	}
+	return "http://127.0.0.1:8317"
+}
+
 func (p *Plugin) handleAuthLoginStart(raw []byte) (any, error) {
 	var req rpcAuthLoginStartRequest
 	if len(raw) > 0 {
@@ -299,22 +310,61 @@ func (p *Plugin) handleAuthLoginStart(raw []byte) (any, error) {
 		}
 	}
 	stateID := uuid.NewString()
-	p.loginStateMu.Lock()
-	p.loginStates[stateID] = loginSessionState{
+	session := &loginSessionState{
 		CreatedAt:       time.Now(),
 		InitialAccounts: initial,
 		Provider:        ProviderID,
 	}
+	p.loginStateMu.Lock()
+	p.loginStates[stateID] = session
 	p.loginStateMu.Unlock()
 
-	loginURL := "/v0/resource/plugins/aistudio2api/accounts?autologin=1"
+	proxyURL := strings.TrimSpace(p.appCfg.Proxy)
+	if proxyURL == "" {
+		proxyURL = strings.TrimSpace(req.Host.ProxyURL)
+	}
+	hostCallbackID := req.HostCallbackID
+
+	// Immediately launch the local Chrome Incognito window in the background when the user clicks "Start Login" in ECPA
+	if os.Getenv("AISTUDIO2API_NO_AUTO_BROWSER") == "" {
+		if chromeBin, _ := aistudio.FindLocalChromeBinary(); chromeBin != "" && p.chromeLogin.TryLock() {
+			go func(state string, proxy string, cbID string) {
+				defer p.chromeLogin.Unlock()
+
+				created, loginErr := rt.Admin.CreateAccount(p.ctx, api.AccountCreateInput{
+					Proxy: proxy,
+				}, nil)
+
+				p.loginStateMu.Lock()
+				st, ok := p.loginStates[state]
+				if ok && st != nil {
+					st.Done = true
+					if loginErr != nil {
+						st.ErrorMessage = loginErr.Error()
+					} else {
+						accCopy := created
+						st.Account = &accCopy
+					}
+				}
+				p.loginStateMu.Unlock()
+
+				if loginErr == nil {
+					_ = p.SyncAccountToHostAuth(cbID, created)
+					go func() { _ = rt.EnsureRunning(p.ctx) }()
+				}
+			}(stateID, proxyURL, hostCallbackID)
+		}
+	}
+
+	origin := resolveHostOrigin(req.BaseURL)
+	loginURL := origin + "/v0/resource/plugins/aistudio2api/accounts"
 	return pluginapi.AuthLoginStartResponse{
 		Provider:  ProviderID,
 		URL:       loginURL,
 		State:     stateID,
 		ExpiresAt: time.Now().Add(10 * time.Minute),
 		Metadata: map[string]any{
-			"instructions": "Open /v0/resource/plugins/aistudio2api/accounts to sign in with local Chrome Incognito or paste Google AI Studio Cookies / StorageState JSON.",
+			"instructions": "Local Chrome Incognito window has been launched for Google AI Studio login. Complete sign-in there, or open " + loginURL + " to manage accounts.",
 			"resource_url": loginURL,
 		},
 	}, nil
@@ -329,9 +379,33 @@ func (p *Plugin) handleAuthLoginPoll(raw []byte) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	stateKey := strings.TrimSpace(req.State)
 	p.loginStateMu.Lock()
-	session, exists := p.loginStates[strings.TrimSpace(req.State)]
+	session, exists := p.loginStates[stateKey]
+	var doneAccount *api.AdminAccount
+	var doneErr string
+	var initial map[string]struct{}
+	if exists && session != nil {
+		initial = session.InitialAccounts
+		if session.Done {
+			doneAccount = session.Account
+			doneErr = session.ErrorMessage
+		}
+	}
 	p.loginStateMu.Unlock()
+
+	if doneAccount != nil {
+		if authData, err := p.buildAuthDataForAccount(rt, *doneAccount); err == nil {
+			p.loginStateMu.Lock()
+			delete(p.loginStates, stateKey)
+			p.loginStateMu.Unlock()
+			return pluginapi.AuthLoginPollResponse{
+				Status:  "success",
+				Message: "AI Studio account logged in via Chrome Incognito: " + doneAccount.Label,
+				Auth:    authData,
+			}, nil
+		}
+	}
 
 	accounts, err := rt.Admin.Accounts(p.ctx)
 	if err != nil {
@@ -339,8 +413,8 @@ func (p *Plugin) handleAuthLoginPoll(raw []byte) (any, error) {
 	}
 	for _, acc := range accounts {
 		id := strings.ToLower(strings.TrimSpace(acc.ID))
-		if exists {
-			if _, wasPresent := session.InitialAccounts[id]; wasPresent {
+		if exists && initial != nil {
+			if _, wasPresent := initial[id]; wasPresent {
 				continue
 			}
 		}
@@ -349,7 +423,7 @@ func (p *Plugin) handleAuthLoginPoll(raw []byte) (any, error) {
 			continue
 		}
 		p.loginStateMu.Lock()
-		delete(p.loginStates, strings.TrimSpace(req.State))
+		delete(p.loginStates, stateKey)
 		p.loginStateMu.Unlock()
 		return pluginapi.AuthLoginPollResponse{
 			Status:  "success",
@@ -357,9 +431,20 @@ func (p *Plugin) handleAuthLoginPoll(raw []byte) (any, error) {
 			Auth:    authData,
 		}, nil
 	}
+
+	if doneErr != "" {
+		p.loginStateMu.Lock()
+		delete(p.loginStates, stateKey)
+		p.loginStateMu.Unlock()
+		return pluginapi.AuthLoginPollResponse{
+			Status:  "error",
+			Message: doneErr,
+		}, nil
+	}
+
 	return pluginapi.AuthLoginPollResponse{
 		Status:  "pending",
-		Message: "Waiting for account import at /v0/resource/plugins/aistudio2api/accounts",
+		Message: "Waiting for Google AI Studio login in the local Chrome Incognito window...",
 	}, nil
 }
 

@@ -196,6 +196,16 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 	if statusResp.StatusCode != http.StatusOK || !strings.Contains(string(statusResp.Body), `"waa_backend":"spidermonkey"`) || !strings.Contains(string(statusResp.Body), `"chrome_available"`) {
 		t.Fatalf("unexpected status response: %s", string(statusResp.Body))
 	}
+
+	t.Setenv("AISTUDIO2API_NO_AUTO_BROWSER", "1")
+	startRes, err := p.HandleMethod(pluginabi.MethodAuthLoginStart, []byte(`{"provider":"aistudio2api","base_url":"http://127.0.0.1:8317/v8/management/oauth/callback"}`))
+	if err != nil {
+		t.Fatalf("auth.login_start failed: %v", err)
+	}
+	startResp := startRes.(pluginapi.AuthLoginStartResponse)
+	if startResp.URL != "http://127.0.0.1:8317/v0/resource/plugins/aistudio2api/accounts" {
+		t.Fatalf("expected valid full URL in AuthLoginStartResponse, got %q", startResp.URL)
+	}
 }
 
 func TestSpiderMonkeyBotGuardVMIntegration(t *testing.T) {

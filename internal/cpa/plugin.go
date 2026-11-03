@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Mag1cFall/AIStudio2API/internal/api"
 	"github.com/Mag1cFall/AIStudio2API/internal/app"
 	"github.com/Mag1cFall/AIStudio2API/internal/config"
 	"github.com/Mag1cFall/AIStudio2API/internal/pluginabi"
@@ -25,13 +26,17 @@ type Plugin struct {
 	runtime      *app.PluginRuntime
 	hostCall     HostCallFunc
 	loginStateMu sync.Mutex
-	loginStates  map[string]loginSessionState
+	loginStates  map[string]*loginSessionState
+	chromeLogin  sync.Mutex
 }
 
 type loginSessionState struct {
 	CreatedAt       time.Time
 	InitialAccounts map[string]struct{}
 	Provider        string
+	Done            bool
+	Account         *api.AdminAccount
+	ErrorMessage    string
 }
 
 func NewPlugin(hostCall HostCallFunc) *Plugin {
@@ -40,7 +45,7 @@ func NewPlugin(hostCall HostCallFunc) *Plugin {
 		ctx:         ctx,
 		cancel:      cancel,
 		hostCall:    hostCall,
-		loginStates: make(map[string]loginSessionState),
+		loginStates: make(map[string]*loginSessionState),
 	}
 }
 
