@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
+
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 	"github.com/Mag1cFall/AIStudio2API/internal/api"
 	"github.com/Mag1cFall/AIStudio2API/internal/app"
@@ -345,12 +347,33 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		if err := json.Unmarshal(req.Body, &body); err != nil {
 			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
 		}
+		locale := strings.TrimSpace(body.Locale)
+		timezone := strings.TrimSpace(body.Timezone)
+		if existing, err := rt.Admin.Accounts(p.ctx); err == nil {
+			for _, acc := range existing {
+				if strings.EqualFold(acc.ID, body.AccountID) {
+					if locale == "" {
+						locale = acc.Locale
+					}
+					if timezone == "" {
+						timezone = acc.Timezone
+					}
+					break
+				}
+			}
+		}
+		if locale == "" {
+			locale = "en-US"
+		}
+		if timezone == "" {
+			timezone = "America/Los_Angeles"
+		}
 		updated, err := rt.Admin.UpdateAccount(p.ctx, body.AccountID, api.AccountInput{
 			Label:    body.AccountID,
 			Enabled:  body.Enabled,
-			Proxy:    body.Proxy,
-			Locale:   body.Locale,
-			Timezone: body.Timezone,
+			Proxy:    strings.TrimSpace(body.Proxy),
+			Locale:   locale,
+			Timezone: timezone,
 		})
 		if err != nil {
 			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
@@ -396,17 +419,29 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 			Scope     string `json:"scope"`
 		}
 		_ = json.Unmarshal(req.Body, &body)
-		if strings.TrimSpace(body.AccountID) != "" {
-			if err := rt.Admin.ClearCooldown(p.ctx, body.AccountID, body.Scope); err != nil {
+		accountID := strings.TrimSpace(body.AccountID)
+		scope := strings.TrimSpace(body.Scope)
+		if accountID == "" {
+			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": "请指定要清除冷却的账户邮箱 (account_id)"}), nil
+		}
+		if scope != "" {
+			if err := rt.Admin.ClearCooldown(p.ctx, accountID, scope); err != nil {
 				return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
 			}
 		} else {
+			scopes := map[string]struct{}{"*": {}}
 			for _, st := range rt.Pool().Status() {
-				_ = rt.Admin.ClearCooldown(p.ctx, st.ID, body.Scope)
+				if strings.EqualFold(st.ID, accountID) {
+					for k := range st.Cooldowns {
+						scopes[k] = struct{}{}
+					}
+				}
+			}
+			for sc := range scopes {
+				_ = rt.Admin.ClearCooldown(p.ctx, accountID, sc)
 			}
 		}
-		return jsonManagementResponse(http.StatusOK, map[string]any{"cleared": true}), nil
-
+		return jsonManagementResponse(http.StatusOK, map[string]any{"cleared": true, "account_id": accountID}), nil
 	case method == http.MethodGet && path == "/v0/management/aistudio2api/models":
 		models, err := rt.Admin.CatalogModels(p.ctx)
 		if err != nil || len(models) == 0 {
@@ -429,6 +464,41 @@ func (p *Plugin) buildStatusManagementResponse(rt *app.PluginRuntime) pluginapi.
 	status, _ := rt.Admin.Status(p.ctx)
 	accounts, _ := rt.Admin.Accounts(p.ctx)
 	cooldowns, _ := rt.Admin.Cooldowns(p.ctx)
+	now := time.Now()
+	seenCooldowns := make(map[string]struct{}, len(cooldowns))
+	for _, cd := range cooldowns {
+		seenCooldowns[strings.ToLower(cd.AccountID)+"|"+cd.Scope] = struct{}{}
+	}
+	for _, st := range rt.Pool().Status() {
+		for sc, cd := range st.Cooldowns {
+			if !cd.Active(now) {
+				continue
+			}
+			key := strings.ToLower(st.ID) + "|" + sc
+			if _, ok := seenCooldowns[key]; ok {
+				continue
+			}
+			seenCooldowns[key] = struct{}{}
+			modelID := sc
+			channel := string(aistudio.ChannelPlayground)
+			if sc == "*" {
+				modelID = "*"
+				channel = "all"
+			} else if after, ok := strings.CutPrefix(sc, string(aistudio.ChannelBuild)+":"); ok {
+				modelID = after
+				channel = string(aistudio.ChannelBuild)
+			}
+			cooldowns = append(cooldowns, api.AdminCooldown{
+				AccountID:    st.ID,
+				AccountLabel: st.Label,
+				Channel:      channel,
+				ModelID:      modelID,
+				Scope:        sc,
+				Until:        cd.Until,
+				Reason:       cd.Reason,
+			})
+		}
+	}
 	activeReqs, _ := rt.Admin.Requests(p.ctx)
 	models, _ := rt.Admin.CatalogModels(p.ctx)
 	chromeBin, _ := aistudio.FindLocalChromeBinary()
