@@ -24,16 +24,15 @@
   - **Build 通道**（`MakerSuiteService/CodeAssistantOffline`）：支持 `gemini-3.8-flash-build`、`gemini-3.1-pro-preview-build` 等 `-build` 后缀模型，以及 Build 独有模型（合计自动发现 50+ 模型）。
 - **四协议原生输入输出**：同时支持 `chat-completions`（OpenAI Chat）、`responses`（OpenAI Responses）、`anthropic`（Claude Messages）与 `gemini`（Google Gemini Native）请求/流式响应。
 - **全套 CLIProxyAPI 插件能力接入（9 大能力）**：
-  1. `auth_provider`：凭证解析、OAuth 引导、自动刷新与 1 对 1 自动同步至 `~/.cli-proxy-api/aistudio2api-<email>.json`。
+  1. `auth_provider`：支持在 ECPA / CPA 控制台直接点击 **「开始登录」** 一键拉起本机独立 Chrome 窗口完成 OAuth 登录与自动轮询（`auth.login_start` / `auth.login_poll`），并 1 对 1 自动同步至 `~/.cli-proxy-api/aistudio2api-<email>.json`。
   2. `model_provider`：静态目录 + 按账户动态发现 Playground 与 Build 模型目录。
   3. `model_router`：支持 `aistudio/<model>` 前缀及无前缀模型名（如 `gemini-3.8-flash`、`gemini-3.8-flash-build`）自动路由。
   4. `scheduler`：复用 AIStudio2API 原生 `AccountPool` 权益分级（Paid / Free）、并发度与冷却感知调度。
-  5. `executor`：同步/流式生成、Token 计数（SentencePiece + 上游 `CountTokens`）与多模态媒体透传。
+  5. `executor`：同步/流式生成、Build 原生工具调用、Token 计数（SentencePiece + 上游 `CountTokens`）与多模态媒体透传。
   6. `request_lifecycle_plugin`：跟踪请求完成度与状态码。
   7. `quota_provider`：在 CPA 控制台实时展示账户权益等级、可用模型数与冷却恢复倒计时，支持一键重置冷却。
-  8. `command_line_plugin`：扩展 `--aistudio2api-status` 命令行诊断参数。
-  9. `management_api` + 内置控制台页面（`/v0/resource/plugins/aistudio2api/accounts`）：提供单按钮启停控制、Cookie/StorageState 账户导入、冷却清理与实时运行日志。
-
+  8. `command_line_plugin`：扩展 `--aistudio2api-status` 与 `--aistudio2api-login` 命令行参数。
+  9. `management_api` + 内置控制台页面（`/v0/resource/plugins/aistudio2api/accounts`）：提供单按钮启停控制、本机 Chrome 独立窗口登录、Cookie/StorageState 账户导入、冷却清理与实时运行日志。
 ---
 
 ## 架构概览
@@ -122,25 +121,32 @@ plugins:
 | `model_prefix` | `string` | `"aistudio/"` | 模型路由前缀（如 `aistudio/gemini-3.8-flash`） |
 | `route_unprefixed_models` | `bool` | `true` | 是否直接路由无前缀 AI Studio 模型（如 `gemini-3.8-flash`、`gemini-3.8-flash-build`） |
 | `sync_auth_files` | `bool` | `true` | 导入/删除账号时自动在 `~/.cli-proxy-api/` 下 1 对 1 同步/清理 `aistudio2api-<email>.json` |
+| `upstream_channels` | `[]string` | `["playground", "build"]` | 启用的上游通道（`playground`、`build`） |
+| `first_token_timeout_sec` | `int` | `20` | 流式首字超时秒数 |
+| `first_token_hedging` | `string` | `"auto"` | 首字超时备用并发请求策略（`auto` 默认对 `gemini-4-argon` 开启，`on` 全局开启，`off` 关闭） |
 
 ---
 
 ## 账号登录与导入指南
 
-启动 CLIProxyAPI 后，插件会**随服务自动启动并预热**。打开插件管理面板：
-- 浏览器访问：`http://127.0.0.1:8317/v0/resource/plugins/aistudio2api/accounts`
-- 或在 CLIProxyAPI 管理中心左侧菜单点击 **「插件 -> AI Studio (WAA)」**。
+启动 CLIProxyAPI 后，插件会**随服务自动启动并预热**。支持以下三种方式添加 Google AI Studio 账号：
 
-### 1. 本机 Chrome 无痕浏览器登录（推荐）
-在插件管理面板点击 **「🌐 启动本机 Chrome 无痕登录」**（或命令行运行 `cli-proxy-api --aistudio2api-login`）：
-- 插件会使用独立临时目录（`--user-data-dir` + `--incognito`）弹出本机已安装的 Chrome / Edge / Brave 无痕窗口，**不读取本机已有浏览器数据或系统钥匙串**；
-- 在弹出的无痕窗口中完成 Google 账号登录并跳转至 AI Studio 后，插件会自动拉取当前无痕会话的 Cookie、StorageState 与账户邮箱，自动关闭无痕窗口并清理临时目录，同时将凭证同步至 CLIProxyAPI。
+### 方式一：在 ECPA / CPA 控制台直接点击「开始登录」（最简便）
+1. 在 EasyCLIProxyAPI（或 CLIProxyAPI 管理中心）的 **OAuth 登录** 或 **插件卡片** 页面找到 **`AIStudio2API`**，直接点击 **「开始登录」**。
+2. 插件会自动在后台弹出一个**本机独立隔离的 Chrome / Edge / Brave 窗口**（使用独立临时 `--user-data-dir` 并关闭 `AutomationControlled` 自动化特征，**不读取本机已有浏览器数据或系统钥匙串**，且不会触发 Google「不安全浏览器」拦截）。
+3. 在弹出的浏览器窗口中登录 Google 账号并进入 AI Studio 后，插件会自动抓取当前隔离会话的凭证、自动关闭窗口并清理临时目录，ECPA 界面将自动完成登录并加载新账号。
+
+### 方式二：在插件内置管理面板登录或重登
+打开插件内置管理面板（浏览器访问 `http://127.0.0.1:8317/v0/resource/plugins/aistudio2api/accounts`，或在管理中心点击 **「插件 -> AI Studio (WAA)」**）：
+- 点击 **「🌐 启动本机 Chrome 无痕登录」**（或命令行运行 `cli-proxy-api --aistudio2api-login`）即可弹出独立浏览器窗口完成登录；
 - 对已有账户点击列表中的 **「无痕重登」** 即可一键刷新失效凭证。
 
-### 2. 手动粘贴 Cookie / StorageState 导入（适用于无桌面环境或远程服务器）
-在面板中粘贴包含 `SAPISID` 与 `__Secure-1PSID` 的浏览器请求头 Cookie 字符串、Cookie-Editor JSON 数组或 Playwright `storage-state.json` 内容，点击 **「导入 Cookie / StorageState 账户」**。
+### 方式三：手动粘贴 Cookie / StorageState 导入（适用于无桌面环境或远程服务器）
+在插件内置管理面板中粘贴包含 `SAPISID` 与 `__Secure-1PSID` 的浏览器请求头 Cookie 字符串、Cookie-Editor JSON 数组或 Playwright `storage-state.json` 内容，点击 **「导入 Cookie / StorageState 账户」**。
 
-### 3. 调用示例
+---
+
+## 调用示例
 
 ```bash
 # 调用 Playground 通道模型 (gemini-3.8-flash)

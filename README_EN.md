@@ -24,16 +24,15 @@
   - **Build Channel** (`MakerSuiteService/CodeAssistantOffline`): Supports `-build` models (`gemini-3.8-flash-build`, `gemini-3.1-pro-preview-build`, etc.) plus Build-exclusive models (50+ models discovered automatically).
 - **Native 4-Protocol Input/Output**: Accepts and streams `chat-completions` (OpenAI Chat), `responses` (OpenAI Responses), `anthropic` (Claude Messages), and `gemini` (Google Gemini Native) formats.
 - **Complete CLIProxyAPI Plugin Capabilities (All 9 Interfaces)**:
-  1. `auth_provider`: Parses, refreshes, and synchronizes accounts 1-to-1 with `~/.cli-proxy-api/aistudio2api-<email>.json`.
+  1. `auth_provider`: Supports clicking **"Start Login"** directly in the ECPA / CPA OAuth dashboard (`auth.login_start` / `auth.login_poll`) to launch an isolated local Chrome window and auto-capture credentials, syncing 1-to-1 with `~/.cli-proxy-api/aistudio2api-<email>.json`.
   2. `model_provider`: Static + per-credential dynamic discovery of Playground & Build model catalogs.
   3. `model_router`: Routes both prefixed (`aistudio/<model>`) and unprefixed (`gemini-3.8-flash`, `gemini-3.8-flash-build`) model requests.
   4. `scheduler`: Delegates to AIStudio2API's tier-aware (Paid / Free), concurrency-aware, and cooldown-aware `AccountPool`.
-  5. `executor`: Synchronous & streaming generation, local SentencePiece + upstream `CountTokens`, and multimodal media handling.
+  5. `executor`: Synchronous & streaming generation, Build tool calling, local SentencePiece + upstream `CountTokens`, and multimodal media handling.
   6. `request_lifecycle_plugin`: Tracks request completion and upstream status codes.
   7. `quota_provider`: Reports account benefit tiers, available model counts, and cooldown recovery timers in the CPA dashboard with one-click reset.
-  8. `command_line_plugin`: Adds `--aistudio2api-status` CLI diagnostic flag.
-  9. `management_api` + Embedded Web Console (`/v0/resource/plugins/aistudio2api/accounts`): Single-button service start/stop toggle, Cookie/StorageState account import, cooldown management, and live logs.
-
+  8. `command_line_plugin`: Adds `--aistudio2api-status` and `--aistudio2api-login` CLI flags.
+  9. `management_api` + Embedded Web Console (`/v0/resource/plugins/aistudio2api/accounts`): Single-button service start/stop toggle, local isolated Chrome login, Cookie/StorageState account import, cooldown management, and live logs.
 ---
 
 ## Architecture
@@ -122,25 +121,32 @@ plugins:
 | `model_prefix` | `string` | `"aistudio/"` | Model prefix routed to AIStudio2API (e.g. `aistudio/gemini-3.8-flash`) |
 | `route_unprefixed_models` | `bool` | `true` | Route unprefixed AI Studio models (`gemini-3.8-flash`, `gemini-3.8-flash-build`, etc.) |
 | `sync_auth_files` | `bool` | `true` | Automatically sync/remove 1-to-1 `aistudio2api-<email>.json` files in `~/.cli-proxy-api/` |
+| `upstream_channels` | `[]string` | `["playground", "build"]` | Enabled upstream channels (`playground`, `build`) |
+| `first_token_timeout_sec` | `int` | `20` | First-token timeout in seconds for streaming requests |
+| `first_token_hedging` | `string` | `"auto"` | First-token backup request hedging policy (`auto` enables for `gemini-4-argon`, `on` for all, `off` disabled) |
 
 ---
 
 ## Account Login & Import Guide
 
-When CLIProxyAPI starts, the plugin **automatically starts and pre-warms** in the background. Open the plugin console:
-- Browser URL: `http://127.0.0.1:8317/v0/resource/plugins/aistudio2api/accounts`
-- Or click **Plugins -> AI Studio (WAA)** in the CLIProxyAPI Management Center sidebar.
+When CLIProxyAPI starts, the plugin **automatically starts and pre-warms** in the background. You can add Google AI Studio accounts in three ways:
 
-### 1. Local Chrome Incognito Login (Recommended)
-Click **🌐 Launch Local Chrome Incognito Login** in the plugin console (or run `cli-proxy-api --aistudio2api-login`):
-- Launches your locally installed Chrome / Edge / Brave in an isolated temporary directory (`--user-data-dir` + `--incognito`) without reading existing browser profiles or OS keychains;
-- Once you sign in to your Google account and reach AI Studio, the plugin automatically captures the Incognito session's Cookies, StorageState, and account email, closes the window, deletes the temporary directory, and syncs the credential to CLIProxyAPI.
-- Click **Incognito Relogin** on any existing account row to re-authenticate expired credentials.
+### Method 1: Click "Start Login" Directly in ECPA / CPA Dashboard (Easiest)
+1. In EasyCLIProxyAPI (or the CLIProxyAPI Management Center), go to the **OAuth Login** or **Plugins** page, find **`AIStudio2API`**, and click **"Start Login"**.
+2. The plugin immediately launches an **isolated local Chrome / Edge / Brave window** in the background (using a temporary `--user-data-dir` with Blink `AutomationControlled` disabled so it never reads your existing browser profiles or OS keychains, and passes Google Sign-In without triggering *"This browser or app may not be secure"*).
+3. Sign in to your Google account and reach AI Studio; the plugin automatically captures the isolated session's credentials, closes the window, cleans up the temporary directory, and completes the login in ECPA.
 
-### 2. Cookie / StorageState Import (For Headless Servers)
-Paste a browser request Cookie header (containing `SAPISID` and `__Secure-1PSID`), a Cookie-Editor JSON array, or a Playwright `storage-state.json` document and click **Import Cookie / StorageState Account**.
+### Method 2: Login or Relogin from the Embedded Plugin Console
+Open the embedded plugin console (`http://127.0.0.1:8317/v0/resource/plugins/aistudio2api/accounts`, or click **Plugins -> AI Studio (WAA)** in the sidebar):
+- Click **🌐 Launch Local Chrome Incognito Login** (or run `cli-proxy-api --aistudio2api-login`) to sign in via an isolated browser window;
+- Click **Incognito Relogin** on any existing account row to refresh expired credentials.
 
-### 3. API Request Examples
+### Method 3: Cookie / StorageState Import (For Headless / Remote Servers)
+Paste a browser request Cookie header (containing `SAPISID` and `__Secure-1PSID`), a Cookie-Editor JSON array, or a Playwright `storage-state.json` document in the plugin console and click **Import Cookie / StorageState Account**.
+
+---
+
+## API Request Examples
 
 ```bash
 # Playground channel model (gemini-3.8-flash)
