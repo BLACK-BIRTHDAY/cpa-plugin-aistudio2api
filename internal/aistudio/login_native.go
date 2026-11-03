@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -22,7 +23,7 @@ import (
 )
 
 const (
-	chromeIncognitoStartURL = "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Faistudio.google.com%2Fprompts%2Fnew_chat"
+	chromeIncognitoStartURL = "https://aistudio.google.com/prompts/new_chat"
 	aiStudioBasePrefix      = "https://aistudio.google.com/"
 	aiStudioOriginURL       = "https://aistudio.google.com"
 )
@@ -185,8 +186,9 @@ func (driver *NativeLoginDriver) Login(ctx context.Context, request IsolatedLogi
 
 	args := []string{
 		"--user-data-dir=" + userDataDir,
-		"--incognito",
 		"--remote-debugging-port=0",
+		"--disable-blink-features=AutomationControlled",
+		"--exclude-switches=enable-automation",
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--new-window",
@@ -267,9 +269,11 @@ func (driver *NativeLoginDriver) Login(ctx context.Context, request IsolatedLogi
 		var aiStudioTarget *cdpPageTarget
 		for i := range targets {
 			t := &targets[i]
-			if t.Type == "page" && strings.HasPrefix(t.URL, aiStudioBasePrefix) && t.WebSocketDebuggerURL != "" {
-				aiStudioTarget = t
-				break
+			if t.Type == "page" && t.WebSocketDebuggerURL != "" {
+				ensureStealthOnTarget(loginCtx, t.WebSocketDebuggerURL)
+				if strings.HasPrefix(t.URL, aiStudioBasePrefix) {
+					aiStudioTarget = t
+				}
 			}
 		}
 		if aiStudioTarget == nil {
@@ -285,7 +289,6 @@ func (driver *NativeLoginDriver) Login(ctx context.Context, request IsolatedLogi
 			firstAIStudioSeen = time.Now()
 		}
 		activePageWS = aiStudioTarget.WebSocketDebuggerURL
-
 		// 阶段 2：用户已跳转回 https://aistudio.google.com/，读取无痕会话的 Cookie、localStorage 与登录邮箱
 		state, email, ready, err := inspectAIStudioPage(loginCtx, activePageWS)
 		if err == nil && len(state.Cookies) > 0 {
@@ -553,6 +556,50 @@ func cdpCloseBrowser(ctx context.Context, pageWS string) error {
 	defer conn.Close()
 	var out map[string]any
 	return cdpCall(ctx, conn, 99, "Browser.close", map[string]any{}, &out)
+}
+
+var stealthInjectedTargets sync.Map
+
+const stealthInitScript = `(() => {
+  try {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  } catch {}
+  try {
+    delete Object.getPrototypeOf(navigator).webdriver;
+  } catch {}
+  try {
+    for (const k of Object.keys(window)) {
+      if (k.startsWith('cdc_') || k.startsWith('$cdc_')) {
+        try { delete window[k]; } catch {}
+      }
+    }
+  } catch {}
+})();`
+
+func ensureStealthOnTarget(ctx context.Context, pageWS string) {
+	if pageWS == "" {
+		return
+	}
+	if _, loaded := stealthInjectedTargets.LoadOrStore(pageWS, struct{}{}); loaded {
+		return
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+	dialer := websocket.Dialer{HandshakeTimeout: 1 * time.Second}
+	conn, _, err := dialer.DialContext(callCtx, pageWS, nil)
+	if err != nil {
+		stealthInjectedTargets.Delete(pageWS)
+		return
+	}
+	defer conn.Close()
+	var out map[string]any
+	_ = cdpCall(callCtx, conn, 1, "Page.enable", map[string]any{}, &out)
+	_ = cdpCall(callCtx, conn, 2, "Page.addScriptToEvaluateOnNewDocument", map[string]any{
+		"source": stealthInitScript,
+	}, &out)
+	_ = cdpCall(callCtx, conn, 3, "Runtime.evaluate", map[string]any{
+		"expression": stealthInitScript,
+	}, &out)
 }
 
 func cdpCall(ctx context.Context, conn *websocket.Conn, id int, method string, params any, result any) error {
