@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
-
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 	"github.com/Mag1cFall/AIStudio2API/internal/api"
+	"github.com/Mag1cFall/AIStudio2API/internal/app"
 	"github.com/Mag1cFall/AIStudio2API/internal/pluginapi"
 )
 
@@ -122,14 +123,53 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		return nil, err
 	}
 
-	path := strings.TrimSpace(req.Path)
+	rawPath := strings.TrimSpace(req.Path)
+	path := rawPath
+	var pathQuery url.Values
+	if idx := strings.IndexByte(rawPath, '?'); idx >= 0 {
+		path = rawPath[:idx]
+		pathQuery, _ = url.ParseQuery(rawPath[idx+1:])
+	}
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 	if method == "" {
 		method = http.MethodGet
 	}
 
-	// Serve Web Resource UI (matches both relative "/accounts" and full "/v0/resource/plugins/aistudio2api/accounts")
+	queryParam := func(key string) string {
+		if req.Query != nil {
+			if v := strings.TrimSpace(req.Query.Get(key)); v != "" {
+				return v
+			}
+		}
+		if pathQuery != nil {
+			if v := strings.TrimSpace(pathQuery.Get(key)); v != "" {
+				return v
+			}
+		}
+		if req.Headers != nil {
+			if v := strings.TrimSpace(req.Headers.Get("X-AIStudio-" + key)); v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+
+	// Serve Web Resource UI or read-only JSON snapshots (matches both relative "/accounts" and full "/v0/resource/plugins/aistudio2api/accounts")
 	if path == "/accounts" || path == "/" || strings.HasPrefix(path, "/v0/resource/plugins/aistudio2api") {
+		switch strings.ToLower(queryParam("view")) {
+		case "status":
+			rt, err := p.Runtime()
+			if err != nil {
+				return jsonManagementResponse(http.StatusInternalServerError, map[string]any{"error": err.Error()}), nil
+			}
+			return p.buildStatusManagementResponse(rt), nil
+		case "logs":
+			rt, err := p.Runtime()
+			if err != nil {
+				return jsonManagementResponse(http.StatusInternalServerError, map[string]any{"error": err.Error()}), nil
+			}
+			return jsonManagementResponse(http.StatusOK, map[string]any{"logs": rt.RecentLogs()}), nil
+		}
 		return pluginapi.ManagementResponse{
 			StatusCode: http.StatusOK,
 			Headers: http.Header{
@@ -151,25 +191,7 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 
 	switch {
 	case method == http.MethodGet && path == "/v0/management/aistudio2api/status":
-		status, _ := rt.Admin.Status(p.ctx)
-		accounts, _ := rt.Admin.Accounts(p.ctx)
-		cooldowns, _ := rt.Admin.Cooldowns(p.ctx)
-		activeReqs, _ := rt.Admin.Requests(p.ctx)
-		models, _ := rt.Admin.CatalogModels(p.ctx)
-		chromeBin, _ := aistudio.FindLocalChromeBinary()
-		return jsonManagementResponse(http.StatusOK, map[string]any{
-			"status":           status,
-			"accounts":         accounts,
-			"cooldowns":        cooldowns,
-			"active_requests":  activeReqs,
-			"models_count":     len(models),
-			"waa_backend":      p.appCfg.WAABackend,
-			"data_dir":         p.pluginCfg.DataDir,
-			"accounts_dir":     p.appCfg.AuthStates,
-			"chrome_available": chromeBin != "",
-			"chrome_binary":    chromeBin,
-		}), nil
-
+		return p.buildStatusManagementResponse(rt), nil
 	case method == http.MethodPost && path == "/v0/management/aistudio2api/service/start":
 		status, err := rt.Admin.StartService(p.ctx)
 		if err != nil {
@@ -401,6 +423,27 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 			"error": fmt.Sprintf("route %s %s not found", method, path),
 		}), nil
 	}
+}
+
+func (p *Plugin) buildStatusManagementResponse(rt *app.PluginRuntime) pluginapi.ManagementResponse {
+	status, _ := rt.Admin.Status(p.ctx)
+	accounts, _ := rt.Admin.Accounts(p.ctx)
+	cooldowns, _ := rt.Admin.Cooldowns(p.ctx)
+	activeReqs, _ := rt.Admin.Requests(p.ctx)
+	models, _ := rt.Admin.CatalogModels(p.ctx)
+	chromeBin, _ := aistudio.FindLocalChromeBinary()
+	return jsonManagementResponse(http.StatusOK, map[string]any{
+		"status":           status,
+		"accounts":         accounts,
+		"cooldowns":        cooldowns,
+		"active_requests":  activeReqs,
+		"models_count":     len(models),
+		"waa_backend":      p.appCfg.WAABackend,
+		"data_dir":         p.pluginCfg.DataDir,
+		"accounts_dir":     p.appCfg.AuthStates,
+		"chrome_available": chromeBin != "",
+		"chrome_binary":    chromeBin,
+	})
 }
 
 func jsonManagementResponse(status int, payload any) pluginapi.ManagementResponse {

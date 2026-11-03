@@ -184,6 +184,20 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 		t.Fatalf("unexpected UI response: status=%d len=%d", uiResp.StatusCode, len(uiResp.Body))
 	}
 
+
+	resStatusReq, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodGet,
+		Path:   "/v0/resource/plugins/aistudio2api/accounts",
+		Query:  map[string][]string{"view": {"status"}},
+	})
+	resStatusRes, err := p.HandleMethod(pluginabi.MethodManagementHandle, resStatusReq)
+	if err != nil {
+		t.Fatalf("management.handle resource view=status failed: %v", err)
+	}
+	resStatusResp := resStatusRes.(pluginapi.ManagementResponse)
+	if resStatusResp.StatusCode != http.StatusOK || !strings.Contains(string(resStatusResp.Body), `"waa_backend":"spidermonkey"`) {
+		t.Fatalf("unexpected resource view=status response: %s", string(resStatusResp.Body))
+	}
 	statusReq, _ := json.Marshal(pluginapi.ManagementRequest{
 		Method: http.MethodGet,
 		Path:   "/v0/management/aistudio2api/status",

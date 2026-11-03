@@ -131,8 +131,9 @@ const webUIDashboardHTML = `<!DOCTYPE html>
       </div>
     </div>
     <div class="auth-bar">
-      <input type="password" id="mgmtKey" placeholder="输入 CPA 管理密钥 (Management Key)" style="width: 240px;" />
-      <button onclick="saveKeyAndReload()">连接并刷新</button>
+      <span id="keyStatusBadge" class="badge">只读模式 (查看无需密钥)</span>
+      <input type="password" id="mgmtKey" placeholder="输入 CPA 管理密钥 (仅修改操作需要)" style="width: 250px;" oninput="onKeyInputChanged()" />
+      <button onclick="saveKeyAndReload()">保存密钥</button>
     </div>
   </header>
 
@@ -232,23 +233,93 @@ const webUIDashboardHTML = `<!DOCTYPE html>
 </div>
 
 <script>
+let lastRejectedKey = null;
+
+function resourceUrl(view) {
+  const base = window.location.pathname && window.location.pathname !== '/'
+    ? window.location.pathname
+    : '/v0/resource/plugins/aistudio2api/accounts';
+  return base + '?view=' + encodeURIComponent(view);
+}
+
+function updateKeyBadge() {
+  const badge = document.getElementById('keyStatusBadge');
+  const input = document.getElementById('mgmtKey');
+  if (!badge || !input) return;
+  const k = input.value.trim();
+  if (!k) {
+    badge.textContent = '只读模式 (查看无需密钥)';
+    badge.className = 'badge';
+    input.style.borderColor = '';
+  } else if (lastRejectedKey !== null && k === lastRejectedKey) {
+    badge.textContent = '密钥无效 (已防封拦截)';
+    badge.className = 'badge danger';
+    input.style.borderColor = 'var(--danger)';
+  } else {
+    badge.textContent = '已配置管理密钥';
+    badge.className = 'badge success';
+    input.style.borderColor = '';
+  }
+}
+
+function onKeyInputChanged() {
+  updateKeyBadge();
+}
+
 function getKey() {
   const input = document.getElementById('mgmtKey');
-  if (input.value.trim()) return input.value.trim();
-  const candidates = ['cpa_aistudio2api_key', 'management_key', 'cpa-management-key', 'apiKey', 'token'];
-  for (const k of candidates) {
-    const v = localStorage.getItem(k) || sessionStorage.getItem(k);
-    if (v && v.trim()) {
-      input.value = v.trim();
-      return v.trim();
+  if (input && input.value.trim()) {
+    updateKeyBadge();
+    return input.value.trim();
+  }
+  const params = new URLSearchParams(window.location.search);
+  const urlKey = params.get('key') || params.get('management_key') || params.get('token');
+  if (urlKey && urlKey.trim()) {
+    input.value = urlKey.trim();
+    localStorage.setItem('cpa_aistudio2api_key', urlKey.trim());
+    updateKeyBadge();
+    return urlKey.trim();
+  }
+  const candidates = ['cpa_aistudio2api_key', 'management_key', 'cpa-management-key', 'secret-key', 'secretKey', 'managementKey', 'apiKey', 'token'];
+  const stores = [localStorage, sessionStorage];
+  try {
+    if (window.parent && window.parent !== window && window.parent.localStorage) {
+      stores.push(window.parent.localStorage);
+    }
+  } catch (_) {}
+  try {
+    if (window.opener && window.opener.localStorage) {
+      stores.push(window.opener.localStorage);
+    }
+  } catch (_) {}
+  for (const store of stores) {
+    for (const k of candidates) {
+      try {
+        const v = store.getItem(k);
+        if (v && v.trim()) {
+          input.value = v.trim();
+          updateKeyBadge();
+          return v.trim();
+        }
+      } catch (_) {}
     }
   }
+  updateKeyBadge();
   return '';
 }
 
 function saveKeyAndReload() {
   const k = document.getElementById('mgmtKey').value.trim();
-  if (k) localStorage.setItem('cpa_aistudio2api_key', k);
+  if (k) {
+    localStorage.setItem('cpa_aistudio2api_key', k);
+    if (lastRejectedKey === k) lastRejectedKey = null;
+    showToast('管理密钥已保存，现在可以执行管理操作', false);
+  } else {
+    localStorage.removeItem('cpa_aistudio2api_key');
+    lastRejectedKey = null;
+    showToast('已切换为免密只读浏览模式', false);
+  }
+  updateKeyBadge();
   loadStatus();
   loadLogs();
 }
@@ -262,10 +333,27 @@ function showToast(msg, isErr) {
   setTimeout(() => { el.style.display = 'none'; }, 5000);
 }
 
-async function apiCall(path, method = 'GET', body = null) {
+async function apiCall(path, method = 'GET', body = null, extraHeaders = null) {
   const headers = { 'Content-Type': 'application/json' };
+  if (extraHeaders) {
+    Object.assign(headers, extraHeaders);
+  }
+  const isMgmtRoute = path.startsWith('/v0/management/');
   const key = getKey();
-  if (key) {
+  if (isMgmtRoute) {
+    if (!key) {
+      const input = document.getElementById('mgmtKey');
+      if (input) {
+        input.focus();
+        input.style.borderColor = 'var(--warning)';
+      }
+      throw new Error('请先在右上角填入 CPA 管理密钥后再执行修改操作（查看页面与日志无需密钥）');
+    }
+    if (lastRejectedKey !== null && key === lastRejectedKey) {
+      const input = document.getElementById('mgmtKey');
+      if (input) input.focus();
+      throw new Error('当前管理密钥验证失败 (401/403)，为防止触发 CPA IP 封禁已拦截请求，请修改正确的密钥后点击「保存密钥」');
+    }
     headers['Authorization'] = 'Bearer ' + key;
     headers['X-Management-Key'] = key;
   }
@@ -274,6 +362,11 @@ async function apiCall(path, method = 'GET', body = null) {
   const res = await fetch(path, opts);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    if (isMgmtRoute && (res.status === 401 || res.status === 403)) {
+      lastRejectedKey = key;
+      updateKeyBadge();
+      throw new Error('CPA 管理密钥错误 (HTTP ' + res.status + ')，已停止重复请求以防止 IP 被封禁，请核对右上角管理密钥');
+    }
     throw new Error(data.error || data.message || ('HTTP ' + res.status));
   }
   return data;
@@ -281,7 +374,7 @@ async function apiCall(path, method = 'GET', body = null) {
 
 async function loadStatus() {
   try {
-    const data = await apiCall('/v0/management/aistudio2api/status');
+    const data = await apiCall(resourceUrl('status'), 'GET', null, { 'X-AIStudio-view': 'status' });
     const st = data.status || {};
     const counts = st.accounts || {};
     const state = (st.state || 'STOPPED').toUpperCase();
@@ -313,7 +406,7 @@ async function loadStatus() {
     document.getElementById('statCooldown').textContent = (counts.cooldown || 0) + ' / ' + (counts.auth_required || 0);
     renderAccounts(data.accounts || []);
   } catch (e) {
-    showToast('读取状态失败 (请确认右上角已填写 CPA 管理密钥): ' + e.message, true);
+    showToast('读取状态失败: ' + e.message, true);
   }
 }
 
@@ -518,7 +611,7 @@ async function clearCooldowns(accountId) {
 
 async function loadLogs() {
   try {
-    const res = await apiCall('/v0/management/aistudio2api/logs');
+    const res = await apiCall(resourceUrl('logs'), 'GET', null, { 'X-AIStudio-view': 'logs' });
     const logs = res.logs || [];
     const box = document.getElementById('logsBox');
     if (!logs.length) {
