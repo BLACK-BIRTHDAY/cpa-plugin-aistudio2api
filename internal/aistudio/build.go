@@ -1039,6 +1039,9 @@ func buildProxyResponseBody(raw json.RawMessage, path string) ([]byte, error) {
 func (c *Client) sendBuild(ctx context.Context, request GenerateRequest, entry modelEntry) (*RPCResponse, func(io.Reader, func(Event) error) error, error) {
 	unary := request.Unary || buildUsesUnary(entry.model)
 	response, decoder, err := c.sendBuildMode(ctx, request, entry, unary, "")
+	if err != nil && !unary && BuildGenerationDisabled(err) && ctx.Err() == nil {
+		return c.sendBuildMode(ctx, request, entry, true, "Build 流式代理不可用，回退单次假流式: "+err.Error())
+	}
 	var rpcErr *RPCError
 	if err != nil && request.Unary && !buildUsesUnary(entry.model) && ctx.Err() == nil && errors.As(err, &rpcErr) {
 		message := strings.ToLower(rpcErr.Message)

@@ -13,7 +13,7 @@ import (
 
 const (
 	PluginID      = "aistudio2api"
-	PluginVersion = "1.1.2"
+	PluginVersion = "1.1.3"
 	ProviderID    = "aistudio2api"
 )
 
@@ -204,7 +204,7 @@ func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
 
 	channels := pcfg.UpstreamChannels
 	if len(channels) == 0 {
-		channels = []string{"playground", "build"}
+		channels = []string{"playground"}
 	}
 
 	hedge := strings.TrimSpace(pcfg.FirstEventHedge)

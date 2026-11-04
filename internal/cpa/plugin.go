@@ -252,6 +252,12 @@ func (p *Plugin) handleRegister(raw []byte) (any, error) {
 					Default:     true,
 					Description: "Automatically sync imported AI Studio accounts to CLIProxyAPI auths/ directory",
 				},
+				{
+					Name:        "fake_stream",
+					Type:        pluginapi.ConfigFieldTypeBoolean,
+					Default:     false,
+					Description: "Fake streaming: collect full response upstream before streaming events to client",
+				},
 			},
 		},
 		Capabilities: rpcCapabilities{
