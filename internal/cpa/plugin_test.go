@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 	"github.com/Mag1cFall/AIStudio2API/internal/cpa"
 	"github.com/Mag1cFall/AIStudio2API/internal/pluginabi"
 	"github.com/Mag1cFall/AIStudio2API/internal/pluginapi"
@@ -362,5 +363,44 @@ func TestBuiltDynamicLibraryExists(t *testing.T) {
 	}
 	if info.Size() < 10*1024*1024 {
 		t.Fatalf("expected static-linked SpiderMonkey dylib > 10MB, got %d bytes", info.Size())
+	}
+}
+
+func TestDefaultUpstreamChannelsAndStreamedCallUnaryFallback(t *testing.T) {
+	_, appCfg, err := cpa.ParsePluginConfig([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("ParsePluginConfig failed: %v", err)
+	}
+	if len(appCfg.UpstreamChannels) != 1 || appCfg.UpstreamChannels[0] != "playground" {
+		t.Fatalf("expected default UpstreamChannels=[\"playground\"], got %#v", appCfg.UpstreamChannels)
+	}
+
+	// Verify BuildGenerationDisabled detects PROXY_GENERATION_DISABLED errors for unary fallback
+	disabledErr := &aistudio.RPCError{
+		Method:     "ProxyStreamedCall",
+		StatusCode: http.StatusBadRequest,
+		Code:       3,
+		Message:    "PROXY_GENERATION_DISABLED: streamGenerateContent is not supported",
+	}
+	if !aistudio.BuildGenerationDisabled(disabledErr) {
+		t.Fatalf("expected BuildGenerationDisabled=true for %v", disabledErr)
+	}
+
+	// Verify embedded webui.html serves cleanly with the account lock conflict diagnostic
+	p := cpa.NewPlugin(nil)
+	defer func() {
+		_, _ = p.HandleMethod(pluginabi.MethodPluginShutdown, nil)
+	}()
+	uiReq, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodGet,
+		Path:   "/v0/resource/plugins/aistudio2api/accounts",
+	})
+	uiRes, err := p.HandleMethod(pluginabi.MethodManagementHandle, uiReq)
+	if err != nil {
+		t.Fatalf("webui management handle failed: %v", err)
+	}
+	uiResp := uiRes.(pluginapi.ManagementResponse)
+	if uiResp.StatusCode != http.StatusOK || !strings.Contains(string(uiResp.Body), "进程锁冲突 (多端共用)") {
+		t.Fatalf("unexpected webui response status=%d len=%d", uiResp.StatusCode, len(uiResp.Body))
 	}
 }

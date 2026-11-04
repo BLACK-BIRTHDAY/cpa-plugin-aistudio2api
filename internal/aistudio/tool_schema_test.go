@@ -1,6 +1,7 @@
 package aistudio
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -123,5 +124,122 @@ func TestToolSchemaKeepsFileTools(t *testing.T) {
 	after, _ := json.Marshal(tools)
 	if string(before) != string(after) {
 		t.Fatal("原始工具集发生变化")
+	}
+}
+
+// TestPrepareToolRequestShortens64CharFunctionNamesAndRestoresOnCall 验证超过 63 字符的函数名在发送前收敛为 <=63 字符并在返回调用时还原原名
+func TestPrepareToolRequestShortens64CharFunctionNamesAndRestoresOnCall(t *testing.T) {
+	const (
+		name64A = "p__codex_apps__codex_document_control___execute_document_command"
+		name64B = "p__codex_apps__codex_document_control___execute_document_commanX"
+		short   = "exec_command"
+	)
+	if len(name64A) != 64 || len(name64B) != 64 {
+		t.Fatalf("expected 64-char names, got %d and %d", len(name64A), len(name64B))
+	}
+
+	req := GenerateRequest{
+		Contents: []Content{
+			{
+				Role: "model",
+				Parts: []Part{
+					{FunctionCall: &FunctionCall{ID: "call_1", Name: name64A, Arguments: json.RawMessage(`{"cmd":"run"}`)}},
+				},
+			},
+			{
+				Role: "user",
+				Parts: []Part{
+					{FunctionResult: &FunctionResult{ID: "call_1", Name: name64A, Content: json.RawMessage(`{"ok":true}`)}},
+				},
+			},
+		},
+		Tools: Tools{
+			Functions: []FunctionDeclaration{
+				{
+					Name:       name64A,
+					Strict:     true,
+					Parameters: json.RawMessage(`{"type":"object","properties":{"cmd":{"type":"string"}},"required":["cmd"]}`),
+				},
+				{
+					Name:       name64B,
+					Parameters: json.RawMessage(`{"type":"object","properties":{"cmd":{"type":"string"}}}`),
+				},
+				{
+					Name:       short,
+					Parameters: json.RawMessage(`{"type":"object","properties":{"cmd":{"type":"string"}}}`),
+				},
+			},
+			ToolConfig: ToolConfig{
+				Mode:                 "validated",
+				AllowedFunctionNames: []string{name64A, name64B, short},
+			},
+		},
+	}
+
+	prepared, contract, err := prepareToolRequest(req)
+	if err != nil {
+		t.Fatalf("prepareToolRequest failed: %v", err)
+	}
+	if contract == nil {
+		t.Fatal("expected non-nil toolContract")
+	}
+
+	wireA := prepared.Tools.Functions[0].Name
+	wireB := prepared.Tools.Functions[1].Name
+	wireShort := prepared.Tools.Functions[2].Name
+	if len(wireA) > maxGeminiFunctionNameLen || len(wireB) > maxGeminiFunctionNameLen {
+		t.Fatalf("expected wire names <= %d chars, got %q (%d) and %q (%d)", maxGeminiFunctionNameLen, wireA, len(wireA), wireB, len(wireB))
+	}
+	if wireA == wireB {
+		t.Fatalf("expected distinct wire names for colliding 63-char prefixes, got %q", wireA)
+	}
+	if wireShort != short {
+		t.Fatalf("expected short name %q unchanged, got %q", short, wireShort)
+	}
+	if !reflect.DeepEqual(prepared.Tools.ToolConfig.AllowedFunctionNames, []string{wireA, wireB, short}) {
+		t.Fatalf("unexpected AllowedFunctionNames: %#v", prepared.Tools.ToolConfig.AllowedFunctionNames)
+	}
+	if got := prepared.Contents[0].Parts[0].FunctionCall.Name; got != wireA {
+		t.Fatalf("expected historical FunctionCall name rewritten to %q, got %q", wireA, got)
+	}
+	if got := prepared.Contents[1].Parts[0].FunctionResult.Name; got != wireA {
+		t.Fatalf("expected historical FunctionResult name rewritten to %q, got %q", wireA, got)
+	}
+
+	// Verify Mode == "none" also rewrites historical Contents function names >63 chars
+	noneReq := req
+	noneReq.Tools.ToolConfig.Mode = "none"
+	nonePrepared, _, err := prepareToolRequest(noneReq)
+	if err != nil {
+		t.Fatalf("prepareToolRequest(none) failed: %v", err)
+	}
+	if got := len(nonePrepared.Contents[0].Parts[0].FunctionCall.Name); got > maxGeminiFunctionNameLen {
+		t.Fatalf("expected Mode=none FunctionCall name <= %d, got %d", maxGeminiFunctionNameLen, got)
+	}
+
+	// Verify contract.forward restores original 64-char names on EventToolCall
+	source := make(chan Event, 3)
+	source <- Event{
+		Kind:         EventToolCall,
+		FunctionCall: &FunctionCall{ID: "c1", Name: wireA, Arguments: json.RawMessage(`{"cmd":"hello"}`)},
+	}
+	source <- Event{
+		Kind:         EventToolCall,
+		FunctionCall: &FunctionCall{ID: "c2", Name: wireB, Arguments: json.RawMessage(`{"cmd":"world"}`)},
+	}
+	source <- Event{Kind: EventFinish, FinishReason: "STOP"}
+	close(source)
+
+	var restored []string
+	for ev := range contract.forward(context.Background(), source) {
+		if ev.Kind == EventError {
+			t.Fatalf("unexpected EventError from contract.forward: %v", ev.Err)
+		}
+		if ev.Kind == EventToolCall && ev.FunctionCall != nil {
+			restored = append(restored, ev.FunctionCall.Name)
+		}
+	}
+	if !reflect.DeepEqual(restored, []string{name64A, name64B}) {
+		t.Fatalf("expected restored names %v, got %v", []string{name64A, name64B}, restored)
 	}
 }

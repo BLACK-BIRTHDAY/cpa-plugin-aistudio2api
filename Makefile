@@ -29,13 +29,13 @@ build: spidermonkey
 	CGO_ENABLED=1 \
 	CGO_CXXFLAGS="-I$(SPIDERMONKEY_DIR)/include" \
 	CGO_LDFLAGS="-L$(SPIDERMONKEY_DIR)/lib" \
-	go build -buildmode=c-shared -o $(OUT_FILE) ./cmd/aistudio2api-plugin
+	go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o $(OUT_FILE) ./cmd/aistudio2api-plugin
 
 test: spidermonkey
 	CGO_ENABLED=1 \
 	CGO_CXXFLAGS="-I$(SPIDERMONKEY_DIR)/include" \
 	CGO_LDFLAGS="-L$(SPIDERMONKEY_DIR)/lib" \
-	go test -v ./internal/cpa/...
+	go vet ./... && go test ./internal/aistudio ./internal/api ./internal/config ./internal/cpa ./internal/proxydial
 
 
 install: build
