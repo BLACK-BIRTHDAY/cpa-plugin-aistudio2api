@@ -937,9 +937,13 @@ func (manager *accountWorkerManager) startReservedWorker(
 		))
 		return nil, &accountWorkerInitError{err: initErr, proxy: options.Proxy}
 	}
-	if lease, ok := aistudio.AccountLeaseFromContext(ctx); ok && lease != nil {
-		if browserState, stateErr := worker.BrowserStorageState(ctx); stateErr == nil && len(browserState.Cookies) > 0 {
-			_ = lease.ReplaceCookies(browserState.Cookies)
+	if browserState, stateErr := worker.BrowserStorageState(ctx); stateErr == nil && len(browserState.Cookies) > 0 {
+		if lease, ok := aistudio.AccountLeaseFromContext(ctx); ok && lease != nil && strings.EqualFold(lease.Account().ID, account.id) {
+			if err := lease.ReplaceCookies(browserState.Cookies); err != nil {
+				_ = manager.pool.MergeAccountCookies(account.id, browserState.Cookies)
+			}
+		} else {
+			_ = manager.pool.MergeAccountCookies(account.id, browserState.Cookies)
 		}
 	}
 	return &accountWorkerPreparer{
@@ -1328,7 +1332,7 @@ func (manager *accountWorkerManager) detachStartup(
 // startAuthenticatedWorker 在启动锁释放后恢复同一账户的认证
 func (manager *accountWorkerManager) startAuthenticatedWorker(ctx context.Context, accountID, model string) (*accountWorkerPreparer, error) {
 	lease, leased := aistudio.AccountLeaseFromContext(ctx)
-	if !leased {
+	if !leased || lease == nil || !strings.EqualFold(lease.Account().ID, accountID) {
 		var err error
 		lease, err = manager.pool.AcquireFor(ctx, aistudio.AccountSelection{AccountID: accountID})
 		if err != nil {

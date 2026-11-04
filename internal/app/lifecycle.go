@@ -423,6 +423,9 @@ func (manager *runtimeManager) OpenBidi(ctx context.Context, request aistudio.Bi
 
 // Transcribe 由当前生成服务执行音频转录
 func (manager *runtimeManager) Transcribe(ctx context.Context, request aistudio.TranscriptionRequest) (aistudio.TranscriptionResult, error) {
+	if accountID := PinnedAccountIDFromContext(ctx); accountID != "" && len(request.CandidateAccountIDs) == 0 {
+		request.CandidateAccountIDs = []string{accountID}
+	}
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
 	return manager.current.service.(aistudio.TranscriptionService).Transcribe(ctx, request)

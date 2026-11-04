@@ -8,9 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
-
+	"time"
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 	"github.com/Mag1cFall/AIStudio2API/internal/app"
 	"github.com/Mag1cFall/AIStudio2API/internal/pluginabi"
@@ -60,7 +61,7 @@ func (p *Plugin) prepareExecutionContext(
 	}
 	accountID := extractAccountIDFromAuth(storageJSON, authMetadata, authAttributes)
 	if state, ok := extractStorageStateFromPayload(storageJSON, payload); ok {
-		if acc, err := p.upsertAccountInRuntime(baseCtx, rt, accountID, payload, state); err == nil && acc.ID != "" {
+		if acc, err := p.upsertAccountInRuntime(baseCtx, rt, accountID, payload, state, false); err == nil && acc.ID != "" {
 			accountID = strings.ToLower(strings.TrimSpace(acc.ID))
 		}
 	}
@@ -208,6 +209,7 @@ func (p *Plugin) buildInternalHTTPRequest(
 			httpReq.Header.Add(k, v)
 		}
 	}
+	httpReq.Header.Del("Origin")
 	if httpReq.Header.Get("Content-Type") == "" {
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
@@ -236,7 +238,7 @@ func (p *Plugin) handleExecutorExecute(raw []byte) (any, error) {
 	respBody := rec.Body.Bytes()
 
 	if resp.StatusCode >= 400 {
-		return nil, extractHTTPError(resp.StatusCode, respBody)
+		return nil, extractHTTPError(resp.StatusCode, resp.Header, respBody)
 	}
 
 	return pluginapi.ExecutorResponse{
@@ -256,19 +258,22 @@ func (p *Plugin) handleExecutorExecuteStream(raw []byte) (any, error) {
 		return nil, err
 	}
 
-	httpReq, err := p.buildInternalHTTPRequest(reqCtx, req.ExecutorRequest, true)
+	streamCtx, cancelStream := context.WithCancel(reqCtx)
+	httpReq, err := p.buildInternalHTTPRequest(streamCtx, req.ExecutorRequest, true)
 	if err != nil {
+		cancelStream()
 		return nil, err
 	}
 
 	// If no StreamID was supplied (e.g. direct unit test call), collect chunks synchronously.
 	if strings.TrimSpace(req.StreamID) == "" || p.hostCall == nil {
+		defer cancelStream()
 		rec := httptest.NewRecorder()
 		rt.PublicHandler().ServeHTTP(rec, httpReq)
 		resp := rec.Result()
 		respBody := rec.Body.Bytes()
 		if resp.StatusCode >= 400 {
-			return nil, extractHTTPError(resp.StatusCode, respBody)
+			return nil, extractHTTPError(resp.StatusCode, resp.Header, respBody)
 		}
 		chunks := splitSSEChunks(respBody)
 		return rpcExecutorStreamResponse{
@@ -277,16 +282,28 @@ func (p *Plugin) handleExecutorExecuteStream(raw []byte) (any, error) {
 		}, nil
 	}
 
-	sw := newLiveStreamResponseWriter(p, req.StreamID)
+	sw := newLiveStreamResponseWriter(p, req.StreamID, cancelStream)
 	go func() {
-		defer sw.finishHandler()
+		var panicErr *pluginabi.Error
+		defer func() {
+			if r := recover(); r != nil {
+				msg := fmt.Sprintf("panic in stream handler: %v", r)
+				panicErr = pluginabi.NewError("plugin_panic", msg, http.StatusInternalServerError)
+				sw.WriteHeader(http.StatusInternalServerError)
+				if sw.errBuf.Len() == 0 {
+					_, _ = sw.errBuf.WriteString(msg)
+				}
+			}
+			cancelStream()
+			sw.finishHandler(panicErr)
+		}()
 		rt.PublicHandler().ServeHTTP(sw, httpReq)
 	}()
 
 	<-sw.headerReady
 	if sw.statusCode >= 400 {
 		<-sw.done
-		return nil, extractHTTPError(sw.statusCode, sw.errBuf.Bytes())
+		return nil, extractHTTPError(sw.statusCode, sw.header, sw.errBuf.Bytes())
 	}
 
 	defer close(sw.rpcReturned)
@@ -294,10 +311,10 @@ func (p *Plugin) handleExecutorExecuteStream(raw []byte) (any, error) {
 		Headers: sw.clonedHeaders(),
 	}, nil
 }
-
 type liveStreamResponseWriter struct {
 	plugin      *Plugin
 	streamID    string
+	cancel      context.CancelFunc
 	header      http.Header
 	statusCode  int
 	headerOnce  sync.Once
@@ -307,10 +324,11 @@ type liveStreamResponseWriter struct {
 	errBuf      bytes.Buffer
 }
 
-func newLiveStreamResponseWriter(plugin *Plugin, streamID string) *liveStreamResponseWriter {
+func newLiveStreamResponseWriter(plugin *Plugin, streamID string, cancel context.CancelFunc) *liveStreamResponseWriter {
 	return &liveStreamResponseWriter{
 		plugin:      plugin,
 		streamID:    streamID,
+		cancel:      cancel,
 		header:      make(http.Header),
 		statusCode:  http.StatusOK,
 		headerReady: make(chan struct{}),
@@ -340,6 +358,9 @@ func (w *liveStreamResponseWriter) Write(p []byte) (int, error) {
 	}
 	<-w.rpcReturned
 	if err := w.plugin.emitStreamChunk(w.streamID, p); err != nil {
+		if w.cancel != nil {
+			w.cancel()
+		}
 		return 0, err
 	}
 	return len(p), nil
@@ -353,14 +374,23 @@ func (w *liveStreamResponseWriter) clonedHeaders() http.Header {
 	return cloneHTTPHeader(w.header)
 }
 
-func (w *liveStreamResponseWriter) finishHandler() {
+func (w *liveStreamResponseWriter) finishHandler(streamErr *pluginabi.Error) {
 	w.WriteHeader(http.StatusOK)
 	defer close(w.done)
-	if w.statusCode >= 400 {
+	if w.statusCode >= 400 && streamErr == nil {
 		return
 	}
-	<-w.rpcReturned
-	_ = w.plugin.closeStream(w.streamID, nil)
+	select {
+	case <-w.rpcReturned:
+		_ = w.plugin.closeStream(w.streamID, streamErr)
+	default:
+		if streamErr != nil {
+			// RPC hasn't returned yet because statusCode >= 400 was set before headerReady closed
+			return
+		}
+		<-w.rpcReturned
+		_ = w.plugin.closeStream(w.streamID, nil)
+	}
 }
 
 func (p *Plugin) emitStreamChunk(streamID string, payload []byte) error {
@@ -434,7 +464,7 @@ func (p *Plugin) handleExecutorCountTokens(raw []byte) (any, error) {
 			},
 		})
 		if err != nil {
-			return nil, extractHTTPError(http.StatusBadGateway, []byte(err.Error()))
+			return nil, extractHTTPError(http.StatusBadGateway, nil, []byte(err.Error()))
 		}
 		respPayload, _ := json.Marshal(map[string]any{
 			"totalTokens":  count.InputTokens,
@@ -462,7 +492,7 @@ func (p *Plugin) handleExecutorCountTokens(raw []byte) (any, error) {
 	resp := rec.Result()
 	respBody := rec.Body.Bytes()
 	if resp.StatusCode >= 400 {
-		return nil, extractHTTPError(resp.StatusCode, respBody)
+		return nil, extractHTTPError(resp.StatusCode, resp.Header, respBody)
 	}
 	return pluginapi.ExecutorResponse{
 		Payload: bytes.Clone(respBody),
@@ -502,6 +532,7 @@ func (p *Plugin) handleExecutorHTTPRequest(raw []byte) (any, error) {
 			httpReq.Header.Add(k, v)
 		}
 	}
+	httpReq.Header.Del("Origin")
 
 	rec := httptest.NewRecorder()
 	rt.PublicHandler().ServeHTTP(rec, httpReq)
@@ -536,7 +567,7 @@ func extractMessagesText(body []byte) string {
 	return strings.Join(parts, "\n")
 }
 
-func extractHTTPError(statusCode int, body []byte) *pluginabi.Error {
+func extractHTTPError(statusCode int, headers http.Header, body []byte) *pluginabi.Error {
 	code := "upstream_error"
 	msg := strings.TrimSpace(string(body))
 	if len(body) > 0 {
@@ -554,7 +585,19 @@ func extractHTTPError(statusCode int, body []byte) *pluginabi.Error {
 	if msg == "" {
 		msg = http.StatusText(statusCode)
 	}
-	return pluginabi.NewError(code, msg, statusCode)
+	err := pluginabi.NewError(code, msg, statusCode)
+	if headers != nil {
+		if ra := strings.TrimSpace(headers.Get("Retry-After")); ra != "" {
+			if secs, convErr := strconv.Atoi(ra); convErr == nil && secs > 0 {
+				err.RetryAfterSeconds = secs
+			} else if retryTime, timeErr := http.ParseTime(ra); timeErr == nil {
+				if delta := int(time.Until(retryTime).Seconds()); delta > 0 {
+					err.RetryAfterSeconds = delta
+				}
+			}
+		}
+	}
+	return err
 }
 
 func splitSSEChunks(raw []byte) []pluginapi.ExecutorStreamChunk {

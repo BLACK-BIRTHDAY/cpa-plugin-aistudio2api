@@ -129,7 +129,7 @@ func (p *Plugin) parseAndSyncAuthPayload(ctx context.Context, fileName string, r
 	state, hasState := extractStorageStateFromPayload(rawJSON, payload)
 	rt, rtErr := p.Runtime()
 	if rtErr == nil && hasState {
-		imported, err := p.upsertAccountInRuntime(ctx, rt, accountID, payload, state)
+		imported, err := p.upsertAccountInRuntime(ctx, rt, accountID, payload, state, true)
 		if err == nil && imported.ID != "" {
 			accountID = strings.ToLower(strings.TrimSpace(imported.ID))
 			payload.AccountID = accountID
@@ -245,13 +245,13 @@ func (p *Plugin) upsertAccountInRuntime(
 	accountID string,
 	payload AuthFilePayload,
 	state aistudio.StorageState,
+	forceUpdate bool,
 ) (api.AdminAccount, error) {
 	if err := state.Validate(); err != nil {
 		return api.AdminAccount{}, err
 	}
-	// Check if account already exists in pool
-	if accountID != "" {
-		if existing, ok := rt.Pool().AccountByID(accountID); ok && existing != nil {
+	if accountID != "" && !forceUpdate {
+		if existing, ok := rt.Pool().AccountByID(accountID); ok && existing != nil && existing.State != aistudio.AccountAuthRequired {
 			accounts, _ := rt.Admin.Accounts(ctx)
 			for _, acc := range accounts {
 				if strings.EqualFold(acc.ID, accountID) {
@@ -269,15 +269,11 @@ func (p *Plugin) upsertAccountInRuntime(
 		StorageState: state,
 	})
 	if err != nil {
-		// If account already exists under the discovered email, return it
 		accounts, _ := rt.Admin.Accounts(ctx)
 		for _, acc := range accounts {
 			if accountID != "" && strings.EqualFold(acc.ID, accountID) {
 				return acc, nil
 			}
-		}
-		if len(accounts) > 0 && strings.Contains(err.Error(), "已存在") {
-			return accounts[0], nil
 		}
 		return api.AdminAccount{}, err
 	}
@@ -315,7 +311,13 @@ func (p *Plugin) handleAuthLoginStart(raw []byte) (any, error) {
 		InitialAccounts: initial,
 		Provider:        ProviderID,
 	}
+	now := time.Now()
 	p.loginStateMu.Lock()
+	for k, v := range p.loginStates {
+		if v == nil || now.Sub(v.CreatedAt) > 15*time.Minute {
+			delete(p.loginStates, k)
+		}
+	}
 	p.loginStates[stateID] = session
 	p.loginStateMu.Unlock()
 
@@ -330,7 +332,16 @@ func (p *Plugin) handleAuthLoginStart(raw []byte) (any, error) {
 		if chromeBin, _ := aistudio.FindLocalChromeBinary(); chromeBin != "" && p.chromeLogin.TryLock() {
 			go func(state string, proxy string, cbID string) {
 				defer p.chromeLogin.Unlock()
-
+				defer func() {
+					if r := recover(); r != nil {
+						p.loginStateMu.Lock()
+						if st, ok := p.loginStates[state]; ok && st != nil {
+							st.Done = true
+							st.ErrorMessage = fmt.Sprintf("login panic: %v", r)
+						}
+						p.loginStateMu.Unlock()
+					}
+				}()
 				created, loginErr := rt.Admin.CreateAccount(p.ctx, api.AccountCreateInput{
 					Proxy: proxy,
 				}, nil)

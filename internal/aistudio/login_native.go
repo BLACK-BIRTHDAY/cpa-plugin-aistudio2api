@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,10 +17,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/Mag1cFall/AIStudio2API/internal/proxydial"
 	"github.com/gorilla/websocket"
 )
 
@@ -207,9 +208,18 @@ func (driver *NativeLoginDriver) Login(ctx context.Context, request IsolatedLogi
 		return IsolatedLoginResult{}, errors.New("当前服务器无图形桌面环境（缺少 DISPLAY / WAYLAND_DISPLAY），无法弹出本机 Chrome 窗口，请粘贴 Cookie 导入")
 	}
 
-	chromeBin, err := FindLocalChromeBinary()
-	if err != nil {
-		return IsolatedLoginResult{}, err
+	chromeBin := strings.TrimSpace(driver.chromePath)
+	if chromeBin != "" {
+		if info, statErr := os.Stat(chromeBin); statErr != nil || info.IsDir() {
+			chromeBin = ""
+		}
+	}
+	if chromeBin == "" {
+		var err error
+		chromeBin, err = FindLocalChromeBinary()
+		if err != nil {
+			return IsolatedLoginResult{}, err
+		}
 	}
 
 	timeout := driver.timeout
@@ -223,7 +233,14 @@ func (driver *NativeLoginDriver) Login(ctx context.Context, request IsolatedLogi
 	if err != nil {
 		return IsolatedLoginResult{}, fmt.Errorf("创建临时 Chrome 无痕目录: %w", err)
 	}
-	defer os.RemoveAll(userDataDir)
+	defer func() {
+		for range 6 {
+			if err := os.RemoveAll(userDataDir); err == nil {
+				return
+			}
+			time.Sleep(150 * time.Millisecond)
+		}
+	}()
 
 	args := []string{
 		"--user-data-dir=" + userDataDir,
@@ -236,6 +253,18 @@ func (driver *NativeLoginDriver) Login(ctx context.Context, request IsolatedLogi
 		"--new-window",
 	}
 	if proxy := strings.TrimSpace(request.Proxy); proxy != "" {
+		parsedProxy, parseErr := url.Parse(proxy)
+		if parseErr != nil {
+			return IsolatedLoginResult{}, fmt.Errorf("解析登录代理失败: %w", parseErr)
+		}
+		if parsedProxy.User != nil {
+			relay, relayErr := proxydial.StartRelay(parsedProxy)
+			if relayErr != nil {
+				return IsolatedLoginResult{}, fmt.Errorf("启动登录代理中转失败: %w", relayErr)
+			}
+			defer relay.Close()
+			proxy = "socks5://" + relay.Addr().String()
+		}
 		args = append(args, "--proxy-server="+proxy)
 	}
 	if locale := strings.TrimSpace(request.Locale); locale != "" {
@@ -243,7 +272,7 @@ func (driver *NativeLoginDriver) Login(ctx context.Context, request IsolatedLogi
 	}
 	args = append(args, chromeIncognitoStartURL)
 
-	cmd := exec.CommandContext(loginCtx, chromeBin, args...)
+	cmd := exec.Command(chromeBin, args...)
 	if err := cmd.Start(); err != nil {
 		return IsolatedLoginResult{}, fmt.Errorf("启动本机 Chrome 无痕窗口失败: %w", err)
 	}
@@ -263,6 +292,9 @@ func (driver *NativeLoginDriver) Login(ctx context.Context, request IsolatedLogi
 			closeCancel()
 		}
 		if !exited.Load() && cmd.Process != nil {
+			if runtime.GOOS == "windows" {
+				_ = exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
+			}
 			_ = cmd.Process.Kill()
 		}
 		select {
@@ -415,9 +447,11 @@ func waitForDevToolsActivePort(ctx context.Context, userDataDir string, exited *
 		}
 		data, err := os.ReadFile(portFile)
 		if err == nil {
-			line, _, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
-			if port, convErr := strconv.Atoi(strings.TrimSpace(line)); convErr == nil && port > 0 && port <= 65535 {
-				return port, nil
+			line, rest, hasNewline := strings.Cut(string(data), "\n")
+			if hasNewline && strings.TrimSpace(rest) != "" {
+				if port, convErr := strconv.Atoi(strings.TrimSpace(line)); convErr == nil && port > 0 && port <= 65535 {
+					return port, nil
+				}
 			}
 		}
 		select {
@@ -517,6 +551,14 @@ func inspectAIStudioPage(ctx context.Context, pageWS string) (StorageState, cdpP
 			sameSite = ""
 		}
 		partKey, _ := item.PartitionKey.(string)
+		if partKey == "" {
+			if pkMap, ok := item.PartitionKey.(map[string]any); ok {
+				if hasCrossSite, _ := pkMap["hasCrossSiteAncestor"].(bool); hasCrossSite {
+					continue
+				}
+				partKey, _ = pkMap["topLevelSite"].(string)
+			}
+		}
 		cookies = append(cookies, StateCookie{
 			Name:         item.Name,
 			Value:        item.Value,
@@ -545,8 +587,13 @@ func inspectAIStudioPage(ctx context.Context, pageWS string) (StorageState, cdpP
 			Value string `json:"value"`
 		} `json:"result"`
 	}
+	var stealthOut map[string]any
+	_ = cdpCall(callCtx, conn, 2, "Runtime.evaluate", map[string]any{
+		"expression": stealthInitScript,
+	}, &stealthOut)
+
 	var info cdpPageInspection
-	if err := cdpCall(callCtx, conn, 2, "Runtime.evaluate", map[string]any{
+	if err := cdpCall(callCtx, conn, 3, "Runtime.evaluate", map[string]any{
 		"expression":    pageInspectExpression,
 		"returnByValue": true,
 	}, &evalResp); err == nil && evalResp.Result.Value != "" {
@@ -625,7 +672,6 @@ func cdpCloseBrowser(ctx context.Context, pageWS string) error {
 	return cdpCall(ctx, conn, 99, "Browser.close", map[string]any{}, &out)
 }
 
-var stealthInjectedTargets sync.Map
 
 const stealthInitScript = `(() => {
   try {
@@ -678,15 +724,11 @@ func ensureStealthOnTarget(ctx context.Context, pageWS string) {
 	if pageWS == "" {
 		return
 	}
-	if _, loaded := stealthInjectedTargets.LoadOrStore(pageWS, struct{}{}); loaded {
-		return
-	}
 	callCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
 	dialer := websocket.Dialer{HandshakeTimeout: 1 * time.Second}
 	conn, _, err := dialer.DialContext(callCtx, pageWS, nil)
 	if err != nil {
-		stealthInjectedTargets.Delete(pageWS)
 		return
 	}
 	defer conn.Close()
@@ -715,8 +757,21 @@ const driveAccessButtonExpr = `(() => {
   }) || null;
 })()`
 
-const driveApproveButtonExpr = `document.querySelector('#submit_approve_access')`
-
+const driveApproveButtonExpr = `(() => {
+  const visible = el => {
+    if (!el) return false;
+    const box = el.getBoundingClientRect();
+    return box.width > 0 && box.height > 0 && !el.matches(':disabled') && !el.closest('[aria-disabled="true"]');
+  };
+  const direct = document.querySelector('#submit_approve_access');
+  if (visible(direct)) return direct;
+  const candidates = [...document.querySelectorAll('div[data-continue-button] button, button[jsname], button, input[type="submit"]')];
+  return candidates.find(btn => {
+    if (!visible(btn)) return false;
+    const text = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || btn.value || '')).trim();
+    return /^(Allow|Continue|允许|继续)$/i.test(text);
+  }) || null;
+})()`
 func authorizeDriveOverCDP(
 	ctx context.Context,
 	httpClient *http.Client,
@@ -794,7 +849,15 @@ func authorizeDriveOverCDP(
 		}
 		targets, err := listCDPTargets(driveCtx, httpClient, debugPort)
 		if err != nil {
-			break
+			if exited.Load() {
+				return errors.New("浏览器窗口已关闭")
+			}
+			select {
+			case <-driveCtx.Done():
+				return driveCtx.Err()
+			case <-time.After(450 * time.Millisecond):
+				continue
+			}
 		}
 		var currentPopup *cdpPageTarget
 		for i := range targets {
@@ -889,7 +952,7 @@ func cdpClickElement(ctx context.Context, pageWS string, elementExpr string) err
 	coordExpr := fmt.Sprintf(`(() => {
   const el = %s;
   if (!el) return '';
-  try { el.scrollIntoView({block: 'center', inline: 'center'}); } catch {}
+  try { el.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'}); } catch {}
   const box = el.getBoundingClientRect();
   if (box.width <= 0 || box.height <= 0) return '';
   return JSON.stringify([box.left + box.width / 2, box.top + box.height / 2]);
@@ -935,6 +998,12 @@ func cdpClickElement(ctx context.Context, pageWS string, elementExpr string) err
 }
 
 func cdpCall(ctx context.Context, conn *websocket.Conn, id int, method string, params any, result any) error {
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetWriteDeadline(deadline)
+		_ = conn.SetReadDeadline(deadline)
+	}
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 	msg := map[string]any{
 		"id":     id,
 		"method": method,
@@ -943,6 +1012,9 @@ func cdpCall(ctx context.Context, conn *websocket.Conn, id int, method string, p
 		msg["params"] = params
 	}
 	if err := conn.WriteJSON(msg); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return err
 	}
 	for {

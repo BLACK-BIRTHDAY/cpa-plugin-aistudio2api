@@ -948,14 +948,14 @@ func (s *BidiSession) recordScopedModelAccess(event *BidiEvent) {
 			return
 		}
 	}
-	if s.modelAccessScope == "" {
-		return
-	}
 	if event.Kind == BidiEventError && DefinitiveAuthenticationFailure(event.Err) {
 		checkedAt := s.finishQualificationAttempt(true)
 		if err := s.lease.confirmAuthenticationFailureAt(s.ctx, event.Err, checkedAt); err != nil {
 			event.Err = errors.Join(event.Err, err)
 		}
+		return
+	}
+	if s.modelAccessScope == "" {
 		return
 	}
 	if event.Kind != BidiEventTurnComplete {

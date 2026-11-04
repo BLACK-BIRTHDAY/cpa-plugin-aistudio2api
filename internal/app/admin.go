@@ -388,9 +388,11 @@ func (admin *runtimeAdmin) UpdateAccount(ctx context.Context, accountID string, 
 	if err := lease.Release(); err != nil {
 		return api.AdminAccount{}, err
 	}
-	if _, err := admin.proxies.Assign(); err != nil {
+	changed, err := admin.proxies.Assign()
+	if err != nil {
 		return api.AdminAccount{}, err
 	}
+	admin.rebindAccounts(changed)
 	admin.syncModelCache()
 	if enabling {
 		admin.syncAccountModelCatalog(ctx, account)
@@ -739,8 +741,12 @@ func (admin *runtimeAdmin) effectiveProxy(accountProxy string) string {
 }
 
 func (admin *runtimeAdmin) loginRequest(account *aistudio.Account, directory string) aistudio.IsolatedLoginRequest {
+	proxy := account.EffectiveProxy(admin.globalProxy)
+	if proxy == "" {
+		proxy = admin.effectiveProxy(account.Config.Proxy)
+	}
 	return aistudio.IsolatedLoginRequest{
-		Directory: directory, Proxy: account.EffectiveProxy(admin.globalProxy),
+		Directory: directory, Proxy: proxy,
 		Locale: account.Config.Locale, Timezone: account.Config.Timezone,
 	}
 }

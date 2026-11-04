@@ -491,5 +491,14 @@ func (runtime *Runtime) Close() {
 				runtime.agent.cx.Interrupt()
 			}
 		}
+		pendingDone := make(chan struct{})
+		go func() {
+			runtime.pending.Wait()
+			close(pendingDone)
+		}()
+		select {
+		case <-pendingDone:
+		case <-time.After(2 * time.Second):
+		}
 	})
 }

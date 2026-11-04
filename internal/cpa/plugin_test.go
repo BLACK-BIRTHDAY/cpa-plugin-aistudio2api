@@ -192,11 +192,11 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 	})
 	resStatusRes, err := p.HandleMethod(pluginabi.MethodManagementHandle, resStatusReq)
 	if err != nil {
-		t.Fatalf("management.handle resource view=status failed: %v", err)
+		t.Fatalf("management.handle resource with query failed: %v", err)
 	}
 	resStatusResp := resStatusRes.(pluginapi.ManagementResponse)
-	if resStatusResp.StatusCode != http.StatusOK || !strings.Contains(string(resStatusResp.Body), `"waa_backend":"spidermonkey"`) {
-		t.Fatalf("unexpected resource view=status response: %s", string(resStatusResp.Body))
+	if resStatusResp.StatusCode != http.StatusOK || !strings.Contains(resStatusResp.Headers.Get("Content-Type"), "text/html") || strings.Contains(string(resStatusResp.Body), `"waa_backend":"spidermonkey"`) {
+		t.Fatalf("expected static HTML only on /v0/resource/plugins/..., got content-type=%q", resStatusResp.Headers.Get("Content-Type"))
 	}
 	statusReq, _ := json.Marshal(pluginapi.ManagementRequest{
 		Method: http.MethodGet,

@@ -854,7 +854,7 @@ func (p *AccountPool) Remove(accountID string, deleteDirectory func(*Account) er
 		p.mu.Unlock()
 		return nil, fmt.Errorf("%w: %s", ErrAccountNotFound, accountID)
 	}
-	if account.exclusive || account.exclusiveWaiters > 0 || account.active > 0 {
+	if account.exclusive || account.exclusiveWaiters > 0 || account.active > 0 || account.authRefreshers > 0 {
 		p.mu.Unlock()
 		return nil, fmt.Errorf("%w: %s", ErrAccountLeased, accountID)
 	}
@@ -1579,7 +1579,30 @@ func (l *AccountLease) ReloadStorageState() (StorageState, error) {
 	return state, nil
 }
 
-// ReplaceCookies 以固定指纹浏览器当前 Cookie 替换账户最新持久状态，只有轮换 Cookie 变化且磁盘状态在 rotatingCookieWriteInterval 内写过时不写盘
+func mergeStateCookies(existing []StateCookie, incoming []StateCookie) []StateCookie {
+	if len(existing) == 0 {
+		return append([]StateCookie(nil), incoming...)
+	}
+	merged := make([]StateCookie, 0, len(existing)+len(incoming))
+	merged = append(merged, incoming...)
+	for _, diskCookie := range existing {
+		found := -1
+		for i, c := range merged {
+			if c.Name == diskCookie.Name && strings.EqualFold(c.Domain, diskCookie.Domain) && c.Path == diskCookie.Path && c.PartitionKey == diskCookie.PartitionKey {
+				found = i
+				break
+			}
+		}
+		if found < 0 {
+			merged = append(merged, diskCookie)
+		} else if diskCookie.Expires > merged[found].Expires && merged[found].Expires > 0 {
+			merged[found] = diskCookie
+		}
+	}
+	return merged
+}
+
+// ReplaceCookies 以固定指纹浏览器当前 Cookie 合并更新账户最新持久状态，只有轮换 Cookie 变化且磁盘状态在 rotatingCookieWriteInterval 内写过时不写盘
 func (l *AccountLease) ReplaceCookies(cookies []StateCookie) error {
 	if len(cookies) == 0 {
 		return nil
@@ -1595,18 +1618,50 @@ func (l *AccountLease) ReplaceCookies(cookies []StateCookie) error {
 	if err != nil {
 		return err
 	}
-	if onlyRotatingCookiesChanged(state.Cookies, cookies) {
+	merged := mergeStateCookies(state.Cookies, cookies)
+	if onlyRotatingCookiesChanged(state.Cookies, merged) {
 		if info, err := os.Stat(l.account.StoragePath); err == nil && time.Since(info.ModTime()) < rotatingCookieWriteInterval {
 			return nil
 		}
 	}
-	state.Cookies = append([]StateCookie(nil), cookies...)
+	state.Cookies = merged
 	if err := WriteStorageState(l.account.StoragePath, state); err != nil {
 		return err
 	}
 	l.pool.mu.Lock()
 	l.account.StorageState = state
 	l.pool.mu.Unlock()
+	return nil
+}
+
+// MergeAccountCookies 在无活跃请求租约时（如后台预热或分离式启动完成）安全合并并落盘账户 Cookie
+func (p *AccountPool) MergeAccountCookies(accountID string, cookies []StateCookie) error {
+	if len(cookies) == 0 {
+		return nil
+	}
+	account, ok := p.AccountByID(accountID)
+	if !ok || account == nil {
+		return fmt.Errorf("%w: %s", ErrAccountNotFound, accountID)
+	}
+	account.storageMu.Lock()
+	defer account.storageMu.Unlock()
+	state, err := LoadStorageState(account.StoragePath)
+	if err != nil {
+		return err
+	}
+	merged := mergeStateCookies(state.Cookies, cookies)
+	if onlyRotatingCookiesChanged(state.Cookies, merged) {
+		if info, err := os.Stat(account.StoragePath); err == nil && time.Since(info.ModTime()) < rotatingCookieWriteInterval {
+			return nil
+		}
+	}
+	state.Cookies = merged
+	if err := WriteStorageState(account.StoragePath, state); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	account.StorageState = state
+	p.mu.Unlock()
 	return nil
 }
 

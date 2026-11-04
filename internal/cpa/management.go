@@ -127,51 +127,16 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 
 	rawPath := strings.TrimSpace(req.Path)
 	path := rawPath
-	var pathQuery url.Values
 	if idx := strings.IndexByte(rawPath, '?'); idx >= 0 {
 		path = rawPath[:idx]
-		pathQuery, _ = url.ParseQuery(rawPath[idx+1:])
 	}
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 	if method == "" {
 		method = http.MethodGet
 	}
 
-	queryParam := func(key string) string {
-		if req.Query != nil {
-			if v := strings.TrimSpace(req.Query.Get(key)); v != "" {
-				return v
-			}
-		}
-		if pathQuery != nil {
-			if v := strings.TrimSpace(pathQuery.Get(key)); v != "" {
-				return v
-			}
-		}
-		if req.Headers != nil {
-			if v := strings.TrimSpace(req.Headers.Get("X-AIStudio-" + key)); v != "" {
-				return v
-			}
-		}
-		return ""
-	}
-
-	// Serve Web Resource UI or read-only JSON snapshots (matches both relative "/accounts" and full "/v0/resource/plugins/aistudio2api/accounts")
+	// Serve static Web Resource UI only (strictly passive HTML/CSS/JS per CPA Route Boundary policy)
 	if path == "/accounts" || path == "/" || strings.HasPrefix(path, "/v0/resource/plugins/aistudio2api") {
-		switch strings.ToLower(queryParam("view")) {
-		case "status":
-			rt, err := p.Runtime()
-			if err != nil {
-				return jsonManagementResponse(http.StatusInternalServerError, map[string]any{"error": err.Error()}), nil
-			}
-			return p.buildStatusManagementResponse(rt), nil
-		case "logs":
-			rt, err := p.Runtime()
-			if err != nil {
-				return jsonManagementResponse(http.StatusInternalServerError, map[string]any{"error": err.Error()}), nil
-			}
-			return jsonManagementResponse(http.StatusOK, map[string]any{"logs": rt.RecentLogs()}), nil
-		}
 		return pluginapi.ManagementResponse{
 			StatusCode: http.StatusOK,
 			Headers: http.Header{
@@ -248,6 +213,30 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		var updated api.AdminAccount
 		var err error
 		if accountID != "" {
+			if newProxy := strings.TrimSpace(body.Proxy); newProxy != "" {
+				if existing, err := rt.Admin.Accounts(p.ctx); err == nil {
+					for _, acc := range existing {
+						if strings.EqualFold(acc.ID, accountID) && strings.TrimSpace(acc.Proxy) != newProxy {
+							locale := acc.Locale
+							if locale == "" {
+								locale = "en-US"
+							}
+							tz := acc.Timezone
+							if tz == "" {
+								tz = "America/Los_Angeles"
+							}
+							_, _ = rt.Admin.UpdateAccount(p.ctx, accountID, api.AccountInput{
+								Label:    accountID,
+								Enabled:  acc.Enabled,
+								Proxy:    newProxy,
+								Locale:   locale,
+								Timezone: tz,
+							})
+							break
+						}
+					}
+				}
+			}
 			updated, err = rt.Admin.LoginAccount(p.ctx, accountID, nil)
 		} else {
 			updated, err = rt.Admin.CreateAccount(p.ctx, api.AccountCreateInput{Proxy: body.Proxy}, nil)
@@ -460,9 +449,25 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 	}
 }
 
+func redactProxyURLString(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.User == nil {
+		return trimmed
+	}
+	return parsed.Redacted()
+}
+
 func (p *Plugin) buildStatusManagementResponse(rt *app.PluginRuntime) pluginapi.ManagementResponse {
 	status, _ := rt.Admin.Status(p.ctx)
 	accounts, _ := rt.Admin.Accounts(p.ctx)
+	for i := range accounts {
+		accounts[i].Proxy = redactProxyURLString(accounts[i].Proxy)
+		accounts[i].Egress = redactProxyURLString(accounts[i].Egress)
+	}
 	cooldowns, _ := rt.Admin.Cooldowns(p.ctx)
 	now := time.Now()
 	seenCooldowns := make(map[string]struct{}, len(cooldowns))

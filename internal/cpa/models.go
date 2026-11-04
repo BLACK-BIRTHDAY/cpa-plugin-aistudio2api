@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
+	"github.com/Mag1cFall/AIStudio2API/internal/config"
 	"github.com/Mag1cFall/AIStudio2API/internal/pluginapi"
 )
 
@@ -54,7 +55,7 @@ func (p *Plugin) handleModelForAuth(raw []byte) (any, error) {
 	if state, ok := extractStorageStateFromPayload(req.StorageJSON, payload); ok {
 		if rt, err := p.Runtime(); err == nil {
 			accID := extractAccountIDFromAuth(req.StorageJSON, req.Metadata, req.Attributes)
-			if acc, err := p.upsertAccountInRuntime(p.ctx, rt, accID, payload, state); err == nil && acc.ID != "" {
+			if acc, err := p.upsertAccountInRuntime(p.ctx, rt, accID, payload, state, false); err == nil && acc.ID != "" {
 				if updated, err := p.buildAuthDataForAccount(rt, acc); err == nil {
 					if req.AuthID != "" {
 						updated.ID = req.AuthID
@@ -107,8 +108,9 @@ func (p *Plugin) handleModelRoute(raw []byte) (any, error) {
 
 	// If route_unprefixed_models is explicitly enabled, or if aistudio2api has active accounts
 	// and no competing built-in gemini provider has auth, route known AI Studio models to self.
-	routeUnprefixed := boolOrDefault(p.Config().RouteUnprefixedModels, true)
-	if !routeUnprefixed {
+	cfg := p.Config()
+	routeUnprefixed := boolOrDefault(cfg.RouteUnprefixedModels, true)
+	if cfg.RouteUnprefixedModels == nil && !routeUnprefixed {
 		hasBuiltinGemini := false
 		for _, prov := range req.AvailableProviders {
 			pLower := strings.ToLower(strings.TrimSpace(prov))
@@ -147,9 +149,37 @@ func (p *Plugin) hasReadyAccount() bool {
 func (p *Plugin) isKnownModel(modelID string) bool {
 	clean := StripModelPrefix(modelID, p.Config().ModelPrefix)
 	clean = strings.TrimPrefix(clean, "models/")
-	base, _, err := aistudio.ApplyModelSuffix(clean, aistudio.GenerationConfig{})
-	if err == nil && base != "" {
+	if clean == "" {
+		return false
+	}
+	p.mu.RLock()
+	mappingStr := p.appCfg.ModelMapping
+	rt := p.runtime
+	p.mu.RUnlock()
+	if mappingStr != "" {
+		if mappings, err := config.ParseModelMapping(mappingStr); err == nil {
+			for _, item := range mappings {
+				if strings.EqualFold(item.Alias, clean) && item.Model != "" {
+					clean = strings.TrimPrefix(item.Model, "models/")
+					break
+				}
+			}
+		}
+	}
+	clean = strings.TrimSuffix(clean, "-search")
+	if base, _, err := aistudio.ApplyModelSuffix(clean, aistudio.GenerationConfig{}); err == nil && base != "" {
 		clean = base
+	}
+	clean = strings.TrimSuffix(clean, "-search")
+	clean = strings.TrimSuffix(clean, "-build")
+	clean = strings.TrimSuffix(clean, "-search")
+	if base, _, err := aistudio.ApplyModelSuffix(clean, aistudio.GenerationConfig{}); err == nil && base != "" {
+		clean = base
+	}
+	if rt != nil {
+		if canon := rt.Pool().CanonicalModelID(clean); canon != "" {
+			clean = strings.TrimPrefix(canon, "models/")
+		}
 	}
 	for _, m := range p.collectRawCatalogModels("") {
 		id := strings.TrimPrefix(strings.TrimSpace(m.ID), "models/")

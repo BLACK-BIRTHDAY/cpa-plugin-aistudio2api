@@ -64,6 +64,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/cpa"
@@ -71,9 +72,9 @@ import (
 )
 
 var (
-	hostAPI     *C.cliproxy_host_api
-	pluginMu    sync.Mutex
-	pluginInst  *cpa.Plugin
+	hostAPI    atomic.Pointer[C.cliproxy_host_api]
+	pluginMu   sync.Mutex
+	pluginInst *cpa.Plugin
 )
 
 func getPlugin() *cpa.Plugin {
@@ -95,7 +96,7 @@ func cliproxyPluginInit(host *C.cliproxy_host_api, out *C.cliproxy_plugin_api) C
 	if host == nil || out == nil || uint32(host.abi_version) != pluginabi.ABIVersion {
 		return -1
 	}
-	hostAPI = host
+	hostAPI.Store(host)
 	getPlugin().SetHostCall(callHostABI)
 	C.fill_plugin_api(out)
 	return 0
@@ -165,7 +166,7 @@ func cliproxyPluginShutdown() {
 	if inst != nil {
 		_, _ = inst.HandleMethod(pluginabi.MethodPluginShutdown, nil)
 	}
-	hostAPI = nil
+	hostAPI.Store(nil)
 }
 
 func writeResponse(resp *C.cliproxy_buffer, raw []byte) {
@@ -187,7 +188,8 @@ func writeResponse(resp *C.cliproxy_buffer, raw []byte) {
 }
 
 func callHostABI(method string, payload []byte) ([]byte, error) {
-	if hostAPI == nil {
+	host := hostAPI.Load()
+	if host == nil {
 		return nil, fmt.Errorf("host API is not initialized")
 	}
 	cMethod := C.CString(method)
@@ -203,17 +205,17 @@ func callHostABI(method string, payload []byte) ([]byte, error) {
 	}
 
 	var response C.cliproxy_buffer
-	rc := C.invoke_host_call(hostAPI, cMethod, reqPtr, reqLen, &response)
+	rc := C.invoke_host_call(host, cMethod, reqPtr, reqLen, &response)
 	if rc != 0 {
 		if response.ptr != nil {
-			C.invoke_host_free(hostAPI, response.ptr, response.len)
+			C.invoke_host_free(host, response.ptr, response.len)
 		}
 		return nil, fmt.Errorf("host call %s returned code %d", method, int(rc))
 	}
 	if response.ptr == nil || response.len == 0 {
 		return json.Marshal(pluginabi.Envelope{OK: true})
 	}
-	defer C.invoke_host_free(hostAPI, response.ptr, response.len)
+	defer C.invoke_host_free(host, response.ptr, response.len)
 	return C.GoBytes(response.ptr, C.int(response.len)), nil
 }
 

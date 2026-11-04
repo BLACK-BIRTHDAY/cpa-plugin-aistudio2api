@@ -69,6 +69,8 @@ type goWAARuntime struct {
 	interpreterHash string
 	interpreter     string
 	closed          bool
+	closeCh         chan struct{}
+	closeOnce       sync.Once
 	refreshTimer    *time.Timer
 }
 
@@ -280,15 +282,37 @@ func newGoWAARuntime(ctx context.Context, options camoufoxnative.Options) (*goWA
 
 // scheduleRefresh 在 VM 生命周期到期时按官网流程后台重建 VM
 func (runtime *goWAARuntime) scheduleRefresh() {
+	if runtime.closed {
+		return
+	}
 	runtime.vmExpires = time.Now().Add(waaLifetime)
 	if runtime.refreshTimer != nil {
 		runtime.refreshTimer.Stop()
 	}
 	runtime.refreshTimer = time.AfterFunc(waaLifetime, func() {
+		select {
+		case <-runtime.closeCh:
+			return
+		default:
+		}
 		runtime.vmMu.Lock()
 		defer runtime.vmMu.Unlock()
+		if runtime.closed {
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
+		stop := context.AfterFunc(ctx, func() {})
+		go func() {
+			select {
+			case <-runtime.closeCh:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		defer func() {
+			stop()
+			cancel()
+		}()
 		if _, err := runtime.currentVM(ctx, true); err != nil {
 			slog.Warn("WAA SpiderMonkey VM 刷新失败", "error", err)
 		}
@@ -422,7 +446,7 @@ func newGoPageRuntime(options camoufoxnative.Options) (*goWAARuntime, map[string
 	if err != nil {
 		return nil, nil, err
 	}
-	runtime := &goWAARuntime{options: options, client: client, storage: storage}
+	runtime := &goWAARuntime{options: options, client: client, storage: storage, closeCh: make(chan struct{})}
 	runtime.profile, runtime.userAgent, runtime.acceptLanguage = profileFromFingerprint(fingerprint)
 	pagePath := "/prompts/new_chat"
 	if options.AuthUser > 0 {
@@ -454,7 +478,7 @@ func (runtime *goWAARuntime) loadPage(ctx context.Context) (string, error) {
 	headers.Set("Priority", "u=0, i")
 	target := runtime.pageURL
 	navigationStart := time.Now()
-	for redirect := 0; redirect < 5; redirect++ {
+	for range 5 {
 		response, err := runtime.do(ctx, http.MethodGet, target, nil, headers)
 		if err != nil {
 			return "", fmt.Errorf("载入 AI Studio 页面: %w", err)
@@ -747,6 +771,20 @@ func documentCookie(state StorageState) (string, error) {
 func (runtime *goWAARuntime) loadImage(address string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if runtime.closeCh != nil {
+		select {
+		case <-runtime.closeCh:
+			return false
+		default:
+		}
+		go func() {
+			select {
+			case <-runtime.closeCh:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
 	headers := http.Header{}
 	headers.Set("Accept", "image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5")
 	headers.Set("Referer", aiStudioOrigin+"/")
@@ -867,6 +905,11 @@ func (runtime *goWAARuntime) State() camoufoxnative.State {
 
 // Close 结束 VM 生命周期
 func (runtime *goWAARuntime) Close() error {
+	if runtime.closeCh != nil {
+		runtime.closeOnce.Do(func() {
+			close(runtime.closeCh)
+		})
+	}
 	runtime.vmMu.Lock()
 	defer runtime.vmMu.Unlock()
 	runtime.closed = true

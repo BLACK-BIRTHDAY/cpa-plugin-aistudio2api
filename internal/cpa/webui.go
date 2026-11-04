@@ -511,8 +511,8 @@ const webUIDashboardHTML = `<!DOCTYPE html>
       </div>
     </div>
     <div class="auth-bar">
-      <span id="keyStatusBadge" class="badge">只读模式 (查看无需密钥)</span>
-      <input type="password" id="mgmtKey" placeholder="输入 CPA 管理密钥 (仅修改操作需要)" style="width: 240px;" oninput="onKeyInputChanged()" />
+      <span id="keyStatusBadge" class="badge warning">未填入管理密钥</span>
+      <input type="password" id="mgmtKey" placeholder="输入 CPA 管理密钥" style="width: 240px;" oninput="onKeyInputChanged()" />
       <button onclick="saveKeyAndReload()">保存密钥</button>
     </div>
   </header>
@@ -676,21 +676,14 @@ let editingProxyAccountId = null;
 let editingProxyDraft = '';
 let toastTimer = null;
 
-function resourceUrl(view) {
-  const base = window.location.pathname && window.location.pathname !== '/'
-    ? window.location.pathname
-    : '/v0/resource/plugins/aistudio2api/accounts';
-  return base + '?view=' + encodeURIComponent(view);
-}
-
 function updateKeyBadge() {
   const badge = document.getElementById('keyStatusBadge');
   const input = document.getElementById('mgmtKey');
   if (!badge || !input) return;
   const k = input.value.trim();
   if (!k) {
-    badge.textContent = '只读模式 (查看无需密钥)';
-    badge.className = 'badge';
+    badge.textContent = '未填入管理密钥';
+    badge.className = 'badge warning';
     input.style.borderColor = '';
   } else if (lastRejectedKey !== null && k === lastRejectedKey) {
     badge.textContent = '密钥无效 (已防封拦截)';
@@ -754,11 +747,11 @@ function saveKeyAndReload() {
   if (k) {
     localStorage.setItem('cpa_aistudio2api_key', k);
     if (lastRejectedKey === k) lastRejectedKey = null;
-    showToast('管理密钥已保存，现在可以执行管理操作', false);
+    showToast('管理密钥已保存，正在加载运行状态...', false);
   } else {
     localStorage.removeItem('cpa_aistudio2api_key');
     lastRejectedKey = null;
-    showToast('已切换为免密只读浏览模式', false);
+    showToast('已清除保存的管理密钥', false);
   }
   updateKeyBadge();
   loadStatus();
@@ -777,11 +770,8 @@ function showToast(msg, isErr) {
   toastTimer = setTimeout(() => { el.style.display = 'none'; }, 4800);
 }
 
-async function apiCall(path, method = 'GET', body = null, extraHeaders = null) {
+async function apiCall(path, method = 'GET', body = null) {
   const headers = { 'Content-Type': 'application/json' };
-  if (extraHeaders) {
-    Object.assign(headers, extraHeaders);
-  }
   const isMgmtRoute = path.startsWith('/v0/management/');
   const key = getKey();
   if (isMgmtRoute) {
@@ -791,7 +781,7 @@ async function apiCall(path, method = 'GET', body = null, extraHeaders = null) {
         input.focus();
         input.style.borderColor = 'var(--warning)';
       }
-      throw new Error('请先在右上角填入 CPA 管理密钥后再执行修改操作（查看页面与日志无需密钥）');
+      throw new Error('请先在右上角填入 CPA 管理密钥并点击「保存密钥」');
     }
     if (lastRejectedKey !== null && key === lastRejectedKey) {
       const input = document.getElementById('mgmtKey');
@@ -817,8 +807,20 @@ async function apiCall(path, method = 'GET', body = null, extraHeaders = null) {
 }
 
 async function loadStatus() {
+  if (!getKey()) {
+    const badge = document.getElementById('stateBadge');
+    if (badge) {
+      badge.innerHTML = '<span class="status-dot"></span>待填入密钥';
+      badge.className = 'badge warning';
+    }
+    const tbody = document.getElementById('accountsBody');
+    if (tbody) {
+      tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted); text-align:center; padding:26px;">请先在页面右上角输入 CPA 管理密钥并点击「保存密钥」以加载账户池与状态</td></tr>';
+    }
+    return;
+  }
   try {
-    const data = await apiCall(resourceUrl('status'), 'GET', null, { 'X-AIStudio-view': 'status' });
+    const data = await apiCall('/v0/management/aistudio2api/status');
     const st = data.status || {};
     const counts = st.accounts || {};
     const state = (st.state || 'STOPPED').toUpperCase();
@@ -1236,9 +1238,12 @@ async function refreshAccount(id) {
 }
 
 async function toggleAccount(id, enabled, proxy) {
+  const acc = (latestAccounts || []).find(a => a.id === id);
+  const locale = (acc && acc.locale) ? acc.locale : '';
+  const timezone = (acc && acc.timezone) ? acc.timezone : '';
   try {
     await apiCall('/v0/management/aistudio2api/accounts/update', 'POST', {
-      account_id: id, enabled, proxy, locale: 'en-US', timezone: 'America/Los_Angeles'
+      account_id: id, enabled, proxy, locale, timezone
     });
     loadStatus();
   } catch (e) {
@@ -1294,8 +1299,13 @@ function formatLogTime(isoStr) {
 }
 
 async function loadLogs() {
+  if (!getKey()) {
+    const box = document.getElementById('logsBox');
+    if (box) box.innerHTML = '<div style="color:var(--muted);">请先在右上角填入 CPA 管理密钥后查看实时运行日志</div>';
+    return;
+  }
   try {
-    const res = await apiCall(resourceUrl('logs'), 'GET', null, { 'X-AIStudio-view': 'logs' });
+    const res = await apiCall('/v0/management/aistudio2api/logs');
     const logs = res.logs || [];
     const box = document.getElementById('logsBox');
     if (!logs.length) {

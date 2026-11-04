@@ -13,7 +13,7 @@ import (
 
 const (
 	PluginID      = "aistudio2api"
-	PluginVersion = "1.0.3"
+	PluginVersion = "1.1.0"
 	ProviderID    = "aistudio2api"
 )
 
@@ -92,6 +92,48 @@ func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
 			}
 			if pcfg.SyncAuthFiles == nil {
 				pcfg.SyncAuthFiles = opt.SyncAuthFiles
+			}
+			if pcfg.ModelChannels == "" {
+				pcfg.ModelChannels = opt.ModelChannels
+			}
+			if pcfg.ModelAliases == "" {
+				pcfg.ModelAliases = opt.ModelAliases
+			}
+			if pcfg.BuildNativeNonstream == nil {
+				pcfg.BuildNativeNonstream = opt.BuildNativeNonstream
+			}
+			if pcfg.NonstreamKeepalive == nil {
+				pcfg.NonstreamKeepalive = opt.NonstreamKeepalive
+			}
+			if pcfg.FakeStream == nil {
+				pcfg.FakeStream = opt.FakeStream
+			}
+			if pcfg.TemporaryChat == nil {
+				pcfg.TemporaryChat = opt.TemporaryChat
+			}
+			if pcfg.YouTubeLinks == nil {
+				pcfg.YouTubeLinks = opt.YouTubeLinks
+			}
+			if pcfg.FirstEventHedge == "" {
+				pcfg.FirstEventHedge = opt.FirstEventHedge
+			}
+			if pcfg.SearchModelAliases == nil {
+				pcfg.SearchModelAliases = opt.SearchModelAliases
+			}
+			if pcfg.GoogleSearch == nil {
+				pcfg.GoogleSearch = opt.GoogleSearch
+			}
+			if pcfg.ContinuationRewrite == nil {
+				pcfg.ContinuationRewrite = opt.ContinuationRewrite
+			}
+			if pcfg.ContinuationPrompt == "" {
+				pcfg.ContinuationPrompt = opt.ContinuationPrompt
+			}
+			if pcfg.AutoStart == nil {
+				pcfg.AutoStart = opt.AutoStart
+			}
+			if pcfg.PinExecutorAccount == nil {
+				pcfg.PinExecutorAccount = opt.PinExecutorAccount
 			}
 		}
 	}

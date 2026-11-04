@@ -303,6 +303,10 @@ func (p *Plugin) applyConfig(configYAML []byte) error {
 		}
 		return nil
 	}
+	rt := p.runtime
+	if boolOrDefault(pcfg.SyncAuthFiles, true) && rt != nil {
+		go p.SyncAllAccountsToHostDir(rt)
+	}
 	return nil
 }
 
@@ -323,6 +327,9 @@ func (p *Plugin) handleShutdown() (any, error) {
 	cancel := p.cancel
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 	p.mu.Unlock()
+	p.loginStateMu.Lock()
+	clear(p.loginStates)
+	p.loginStateMu.Unlock()
 	if rt != nil {
 		_ = rt.Close()
 	}
