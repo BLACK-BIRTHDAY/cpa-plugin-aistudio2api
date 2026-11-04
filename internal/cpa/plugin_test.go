@@ -222,6 +222,114 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 	}
 }
 
+func TestAuthFileDisabledSyncOnServiceStopAndShutdown(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	authDir := filepath.Join(tmpHome, ".cli-proxy-api")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatalf("mkdir authDir: %v", err)
+	}
+	dataDir := filepath.Join(tmpHome, ".aistudio2api")
+	authFilePath := filepath.Join(authDir, "aistudio2api-testuser@gmail.com.json")
+	initialPayload := `{
+		"type": "aistudio2api",
+		"provider": "aistudio2api",
+		"account_id": "testuser@gmail.com",
+		"email": "testuser@gmail.com",
+		"label": "testuser@gmail.com",
+		"disabled": true,
+		"storage_state": {
+			"cookies": [
+				{"name": "SAPISID", "value": "test-sapisid-val", "domain": ".google.com", "path": "/", "secure": true, "sameSite": "None"},
+				{"name": "__Secure-1PSID", "value": "test-1psid-val", "domain": ".google.com", "path": "/", "secure": true, "sameSite": "None"},
+				{"name": "__Secure-3PSID", "value": "test-3psid-val", "domain": ".google.com", "path": "/", "secure": true, "sameSite": "None"},
+				{"name": "SID", "value": "test-sid-val", "domain": ".google.com", "path": "/", "sameSite": "Lax"}
+			],
+			"origins": []
+		}
+	}`
+	if err := os.WriteFile(authFilePath, []byte(initialPayload), 0o600); err != nil {
+		t.Fatalf("write initial auth file: %v", err)
+	}
+
+	p := cpa.NewPlugin(nil)
+	defer func() {
+		_, _ = p.HandleMethod(pluginabi.MethodPluginShutdown, []byte(`{}`))
+	}()
+
+	cfgYAML := []byte("data_dir: \"" + dataDir + "\"\nwaa_backend: spidermonkey\nauto_start: false\nsync_auth_files: true\n")
+	regReq, _ := json.Marshal(map[string]any{
+		"config_yaml":    cfgYAML,
+		"schema_version": pluginabi.SchemaVersion,
+	})
+	if _, err := p.HandleMethod(pluginabi.MethodPluginRegister, regReq); err != nil {
+		t.Fatalf("plugin.register failed: %v", err)
+	}
+	// Simulate auto_start=true runtime state for startup sync test
+	cfgYAMLAuto := []byte("data_dir: \"" + dataDir + "\"\nwaa_backend: spidermonkey\nauto_start: true\nsync_auth_files: true\n")
+	regReqAuto, _ := json.Marshal(map[string]any{
+		"config_yaml":    cfgYAMLAuto,
+		"schema_version": pluginabi.SchemaVersion,
+	})
+	if _, err := p.HandleMethod(pluginabi.MethodPluginReconfigure, regReqAuto); err != nil {
+		t.Fatalf("plugin.reconfigure failed: %v", err)
+	}
+
+	// 1. Parse auth during startup window -> should import account as enabled and flip disabled=false on disk
+	parseReq, _ := json.Marshal(pluginapi.AuthParseRequest{
+		FileName: "aistudio2api-testuser@gmail.com.json",
+		RawJSON:  []byte(initialPayload),
+	})
+	parseRes, err := p.HandleMethod(pluginabi.MethodAuthParse, parseReq)
+	if err != nil {
+		t.Fatalf("auth.parse failed: %v", err)
+	}
+	parseResp := parseRes.(pluginapi.AuthParseResponse)
+	if !parseResp.Handled || parseResp.Auth.Disabled {
+		t.Fatalf("expected auth to be enabled on plugin startup, got Disabled=%v", parseResp.Auth.Disabled)
+	}
+
+	checkDiskDisabled := func(wantDisabled bool, wantStopped bool, step string) {
+		t.Helper()
+		raw, err := os.ReadFile(authFilePath)
+		if err != nil {
+			t.Fatalf("%s: read auth file: %v", step, err)
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("%s: unmarshal auth file: %v", step, err)
+		}
+		gotDisabled, _ := doc["disabled"].(bool)
+		gotStopped, _ := doc["service_stopped"].(bool)
+		if gotDisabled != wantDisabled || gotStopped != wantStopped {
+			t.Fatalf("%s: disk auth file disabled=%v service_stopped=%v, want disabled=%v service_stopped=%v", step, gotDisabled, gotStopped, wantDisabled, wantStopped)
+		}
+	}
+	checkDiskDisabled(false, false, "after startup auth.parse")
+
+	// 2. Stop service via management API -> should mark disk auth file disabled=true, service_stopped=true
+	stopReq, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodPost,
+		Path:   "/v0/management/aistudio2api/service/stop",
+	})
+	if _, err := p.HandleMethod(pluginabi.MethodManagementHandle, stopReq); err != nil {
+		t.Fatalf("service/stop failed: %v", err)
+	}
+	checkDiskDisabled(true, true, "after service/stop")
+
+	// 3. Re-enable plugin (reconfigure with auto_start=true) -> should restore disabled=false, service_stopped=false
+	if _, err := p.HandleMethod(pluginabi.MethodPluginReconfigure, regReqAuto); err != nil {
+		t.Fatalf("plugin.reconfigure failed: %v", err)
+	}
+	checkDiskDisabled(false, false, "after plugin reconfigure/enable")
+
+	// 4. Quiesce/Shutdown plugin -> should mark disk auth file disabled=true, service_stopped=true
+	if _, err := p.HandleMethod(pluginabi.MethodPluginQuiesce, []byte(`{}`)); err != nil {
+		t.Fatalf("plugin.quiesce failed: %v", err)
+	}
+	checkDiskDisabled(true, true, "after plugin.quiesce")
+}
+
 func TestSpiderMonkeyBotGuardVMIntegration(t *testing.T) {
 	// Verify that the embedded SpiderMonkey C++ engine initializes the Firefox DOM, loads a BotGuard VM, and produces a WAA proof snapshot
 	rt, err := waa.NewRuntime(t.Context(), waa.Options{

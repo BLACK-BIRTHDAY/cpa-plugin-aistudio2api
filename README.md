@@ -59,11 +59,11 @@ flowchart LR
 
 ### 方式二：从 GitHub Releases 下载预编译包
 1. 前往 [Releases](https://github.com/jianli9158/cpa-plugin-aistudio2api/releases) 下载对应平台的压缩包：
-   - macOS Apple Silicon: `aistudio2api_1.1.0_darwin_arm64.zip`
-   - macOS Intel: `aistudio2api_1.1.0_darwin_amd64.zip`
-   - Linux x86_64: `aistudio2api_1.1.0_linux_amd64.zip`
-   - Linux ARM64: `aistudio2api_1.1.0_linux_arm64.zip`
-   - Windows x86_64: `aistudio2api_1.1.0_windows_amd64.zip`
+   - macOS Apple Silicon: `aistudio2api_1.1.1_darwin_arm64.zip`
+   - macOS Intel: `aistudio2api_1.1.1_darwin_amd64.zip`
+   - Linux x86_64: `aistudio2api_1.1.1_linux_amd64.zip`
+   - Linux ARM64: `aistudio2api_1.1.1_linux_arm64.zip`
+   - Windows x86_64: `aistudio2api_1.1.1_windows_amd64.zip`
 2. 解压出动态库文件（`aistudio2api.dylib` / `aistudio2api.so` / `aistudio2api.dll`），放入 CLIProxyAPI 的插件目录：
    ```text
    plugins/<goos>/<goarch>/aistudio2api.{dylib,so,dll}

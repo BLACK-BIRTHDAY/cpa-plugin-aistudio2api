@@ -41,22 +41,24 @@ type rpcAuthRefreshRequest struct {
 
 // AuthFilePayload is the JSON structure stored in CLIProxyAPI's auths/ directory for aistudio2api.
 type AuthFilePayload struct {
-	Type         string                 `json:"type"`
-	Provider     string                 `json:"provider,omitempty"`
-	AccountID    string                 `json:"account_id,omitempty"`
-	Email        string                 `json:"email,omitempty"`
-	Label        string                 `json:"label,omitempty"`
-	Mode         string                 `json:"mode,omitempty"`
-	Proxy        string                 `json:"proxy,omitempty"`
-	Locale       string                 `json:"locale,omitempty"`
-	Timezone     string                 `json:"timezone,omitempty"`
-	AuthUser     int                    `json:"auth_user,omitempty"`
-	Cookies      string                 `json:"cookies,omitempty"`
-	CookieHeader string                 `json:"cookie_header,omitempty"`
-	StorageState *aistudio.StorageState `json:"storage_state,omitempty"`
-	Tier         string                 `json:"tier,omitempty"`
-	State        string                 `json:"state,omitempty"`
-	UpdatedAt    string                 `json:"updated_at,omitempty"`
+	Type           string                 `json:"type"`
+	Provider       string                 `json:"provider,omitempty"`
+	AccountID      string                 `json:"account_id,omitempty"`
+	Email          string                 `json:"email,omitempty"`
+	Label          string                 `json:"label,omitempty"`
+	Disabled       *bool                  `json:"disabled,omitempty"`
+	ServiceStopped bool                   `json:"service_stopped,omitempty"`
+	Mode           string                 `json:"mode,omitempty"`
+	Proxy          string                 `json:"proxy,omitempty"`
+	Locale         string                 `json:"locale,omitempty"`
+	Timezone       string                 `json:"timezone,omitempty"`
+	AuthUser       int                    `json:"auth_user,omitempty"`
+	Cookies        string                 `json:"cookies,omitempty"`
+	CookieHeader   string                 `json:"cookie_header,omitempty"`
+	StorageState   *aistudio.StorageState `json:"storage_state,omitempty"`
+	Tier           string                 `json:"tier,omitempty"`
+	State          string                 `json:"state,omitempty"`
+	UpdatedAt      string                 `json:"updated_at,omitempty"`
 }
 
 func isAIStudioProvider(provider string) bool {
@@ -126,11 +128,16 @@ func (p *Plugin) parseAndSyncAuthPayload(ctx context.Context, fileName string, r
 		accountID = strings.ToLower(strings.TrimSpace(payload.Label))
 	}
 
+	prevDisabled := payload.Disabled
+	prevServiceStopped := payload.ServiceStopped
+
 	state, hasState := extractStorageStateFromPayload(rawJSON, payload)
 	rt, rtErr := p.Runtime()
+	var imported api.AdminAccount
 	if rtErr == nil && hasState {
-		imported, err := p.upsertAccountInRuntime(ctx, rt, accountID, payload, state, true)
-		if err == nil && imported.ID != "" {
+		acc, err := p.upsertAccountInRuntime(ctx, rt, accountID, payload, state, false)
+		if err == nil && acc.ID != "" {
+			imported = acc
 			accountID = strings.ToLower(strings.TrimSpace(imported.ID))
 			payload.AccountID = accountID
 			payload.Email = accountID
@@ -147,6 +154,50 @@ func (p *Plugin) parseAndSyncAuthPayload(ctx context.Context, fileName string, r
 		if strings.Contains(base, "@") {
 			accountID = strings.ToLower(strings.TrimSpace(base))
 		}
+	}
+
+	serviceStopped := p.serviceStopped.Load()
+	inStartupWindow := false
+	if regNs := p.lastRegisterNs.Load(); regNs > 0 && time.Since(time.Unix(0, regNs)) < 5*time.Second {
+		inStartupWindow = true
+	}
+
+	disabled := false
+	if serviceStopped {
+		disabled = true
+	} else if prevServiceStopped || inStartupWindow {
+		if rtErr == nil && imported.ID != "" {
+			disabled = !imported.Enabled
+		}
+	} else if prevDisabled != nil {
+		disabled = *prevDisabled
+		if rtErr == nil && imported.ID != "" {
+			wantEnabled := !disabled
+			if imported.Enabled != wantEnabled {
+				locale := imported.Locale
+				if locale == "" {
+					locale = "en-US"
+				}
+				tz := imported.Timezone
+				if tz == "" {
+					tz = "America/Los_Angeles"
+				}
+				if updated, uErr := rt.Admin.UpdateAccount(ctx, imported.ID, api.AccountInput{
+					Label:    imported.ID,
+					Enabled:  wantEnabled,
+					Proxy:    imported.Proxy,
+					Locale:   locale,
+					Timezone: tz,
+				}); uErr == nil {
+					imported = updated
+				}
+				if wantEnabled {
+					go func() { _ = rt.EnsureRunning(p.ctx) }()
+				}
+			}
+		}
+	} else if rtErr == nil && imported.ID != "" {
+		disabled = !imported.Enabled
 	}
 
 	label := strings.TrimSpace(payload.Label)
@@ -170,6 +221,8 @@ func (p *Plugin) parseAndSyncAuthPayload(ctx context.Context, fileName string, r
 	payload.Provider = ProviderID
 	payload.AccountID = accountID
 	payload.Label = label
+	payload.Disabled = &disabled
+	payload.ServiceStopped = serviceStopped
 	if hasState && payload.StorageState == nil {
 		payload.StorageState = &state
 	}
@@ -187,6 +240,7 @@ func (p *Plugin) parseAndSyncAuthPayload(ctx context.Context, fileName string, r
 		"account_id": accountID,
 		"email":      accountID,
 		"label":      label,
+		"disabled":   disabled,
 	}
 	if payload.Tier != "" {
 		metadata["tier"] = payload.Tier
@@ -203,17 +257,22 @@ func (p *Plugin) parseAndSyncAuthPayload(ctx context.Context, fileName string, r
 		attributes["tier"] = payload.Tier
 	}
 
-	return pluginapi.AuthData{
+	authData := pluginapi.AuthData{
 		ID:               authID,
 		Provider:         ProviderID,
 		FileName:         fileName,
 		Label:            label,
+		Disabled:         disabled,
 		ProxyURL:         strings.TrimSpace(payload.Proxy),
 		StorageJSON:      storageBytes,
 		Metadata:         metadata,
 		Attributes:       attributes,
 		NextRefreshAfter: time.Now().Add(30 * time.Minute),
-	}, nil
+	}
+	if fileName != "" && (prevDisabled == nil || *prevDisabled != disabled || prevServiceStopped != serviceStopped) {
+		_ = writeAuthDataToDefaultHostDir(authData)
+	}
+	return authData, nil
 }
 
 func extractStorageStateFromPayload(rawJSON []byte, payload AuthFilePayload) (aistudio.StorageState, bool) {
@@ -252,10 +311,21 @@ func (p *Plugin) upsertAccountInRuntime(
 	}
 	if accountID != "" && !forceUpdate {
 		if existing, ok := rt.Pool().AccountByID(accountID); ok && existing != nil && existing.State != aistudio.AccountAuthRequired {
-			accounts, _ := rt.Admin.Accounts(ctx)
-			for _, acc := range accounts {
-				if strings.EqualFold(acc.ID, accountID) {
-					return acc, nil
+			sameCookies := false
+			if existing.Directory != "" {
+				if rawState, rErr := os.ReadFile(filepath.Join(existing.Directory, "storage-state.json")); rErr == nil {
+					var existingState aistudio.StorageState
+					if json.Unmarshal(rawState, &existingState) == nil {
+						sameCookies = sameCoreAuthCookies(existingState, state)
+					}
+				}
+			}
+			if sameCookies {
+				accounts, _ := rt.Admin.Accounts(ctx)
+				for _, acc := range accounts {
+					if strings.EqualFold(acc.ID, accountID) {
+						return acc, nil
+					}
 				}
 			}
 		}
@@ -520,22 +590,39 @@ func (p *Plugin) handleAuthRefresh(raw []byte) (any, error) {
 	}, nil
 }
 
+func sameCoreAuthCookies(a, b aistudio.StorageState) bool {
+	const origin = "https://aistudio.google.com"
+	for _, name := range []string{"SAPISID", "__Secure-1PSID", "__Secure-3PSID", "SID"} {
+		va, oka := a.CookieValue(name, origin, time.Time{})
+		vb, okb := b.CookieValue(name, origin, time.Time{})
+		if oka != okb || va != vb {
+			return false
+		}
+	}
+	v, ok := a.CookieValue("SAPISID", origin, time.Time{})
+	return ok && v != ""
+}
+
 func (p *Plugin) buildAuthDataForAccount(rt *app.PluginRuntime, acc api.AdminAccount) (pluginapi.AuthData, error) {
 	accountID := strings.ToLower(strings.TrimSpace(acc.ID))
 	fileName := fmt.Sprintf("aistudio2api-%s.json", sanitizeFileComponent(accountID))
+	serviceStopped := p.serviceStopped.Load()
+	disabled := !acc.Enabled || serviceStopped
 
 	payload := AuthFilePayload{
-		Type:      ProviderID,
-		Provider:  ProviderID,
-		AccountID: accountID,
-		Email:     accountID,
-		Label:     acc.Label,
-		Proxy:     acc.Proxy,
-		Locale:    acc.Locale,
-		Timezone:  acc.Timezone,
-		Tier:      string(acc.BenefitTier),
-		State:     string(acc.State),
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		Type:           ProviderID,
+		Provider:       ProviderID,
+		AccountID:      accountID,
+		Email:          accountID,
+		Label:          acc.Label,
+		Disabled:       &disabled,
+		ServiceStopped: serviceStopped,
+		Proxy:          acc.Proxy,
+		Locale:         acc.Locale,
+		Timezone:       acc.Timezone,
+		Tier:           string(acc.BenefitTier),
+		State:          string(acc.State),
+		UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
 	}
 
 	if poolAcc, ok := rt.Pool().AccountByID(accountID); ok && poolAcc != nil && poolAcc.Directory != "" {
@@ -558,7 +645,7 @@ func (p *Plugin) buildAuthDataForAccount(rt *app.PluginRuntime, acc api.AdminAcc
 		Provider:         ProviderID,
 		FileName:         fileName,
 		Label:            acc.Label,
-		Disabled:         !acc.Enabled,
+		Disabled:         disabled,
 		ProxyURL:         acc.Proxy,
 		StorageJSON:      storageBytes,
 		NextRefreshAfter: time.Now().Add(30 * time.Minute),
@@ -570,6 +657,7 @@ func (p *Plugin) buildAuthDataForAccount(rt *app.PluginRuntime, acc api.AdminAcc
 			"label":      acc.Label,
 			"tier":       string(acc.BenefitTier),
 			"state":      string(acc.State),
+			"disabled":   disabled,
 		},
 		Attributes: map[string]string{
 			"provider":   ProviderID,
@@ -631,6 +719,73 @@ func (p *Plugin) SyncAllAccountsToHostDir(rt *app.PluginRuntime) {
 	for _, acc := range accounts {
 		if authData, err := p.buildAuthDataForAccount(rt, acc); err == nil {
 			_ = writeAuthDataToDefaultHostDir(authData)
+		}
+	}
+}
+
+func (p *Plugin) setHostAuthFilesDisabled(rt *app.PluginRuntime, forceDisabled bool) {
+	enabledByAccount := make(map[string]bool)
+	if rt != nil {
+		if accounts, err := rt.Admin.Accounts(p.ctx); err == nil {
+			for _, acc := range accounts {
+				enabledByAccount[strings.ToLower(strings.TrimSpace(acc.ID))] = acc.Enabled
+				if authData, bErr := p.buildAuthDataForAccount(rt, acc); bErr == nil {
+					_ = writeAuthDataToDefaultHostDir(authData)
+				}
+			}
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return
+	}
+	authDir := filepath.Join(home, ".cli-proxy-api")
+	entries, err := os.ReadDir(authDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		lower := strings.ToLower(name)
+		if !strings.HasSuffix(lower, ".json") || (!strings.HasPrefix(lower, "aistudio2api-") && !strings.HasPrefix(lower, "aistudio-")) {
+			continue
+		}
+		fullPath := filepath.Join(authDir, name)
+		raw, err := os.ReadFile(fullPath)
+		if err != nil {
+			continue
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(raw, &doc); err != nil || doc == nil {
+			continue
+		}
+		accID, _ := doc["account_id"].(string)
+		accID = strings.ToLower(strings.TrimSpace(accID))
+		targetDisabled := forceDisabled
+		if !forceDisabled {
+			if accEnabled, ok := enabledByAccount[accID]; ok {
+				targetDisabled = !accEnabled
+			} else {
+				targetDisabled = false
+			}
+		}
+		curDisabled, hasDisabled := doc["disabled"].(bool)
+		curStopped, _ := doc["service_stopped"].(bool)
+		if hasDisabled && curDisabled == targetDisabled && curStopped == forceDisabled {
+			continue
+		}
+		doc["disabled"] = targetDisabled
+		if forceDisabled {
+			doc["service_stopped"] = true
+		} else {
+			delete(doc, "service_stopped")
+		}
+		doc["updated_at"] = time.Now().UTC().Format(time.RFC3339)
+		if updated, err := json.Marshal(doc); err == nil {
+			_ = os.WriteFile(fullPath, updated, 0o600)
 		}
 	}
 }

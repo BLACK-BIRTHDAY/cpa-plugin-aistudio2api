@@ -164,15 +164,22 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		if err != nil {
 			return jsonManagementResponse(http.StatusBadGateway, map[string]any{"error": err.Error(), "status": status}), nil
 		}
+		p.serviceStopped.Store(false)
+		if boolOrDefault(p.Config().SyncAuthFiles, true) {
+			p.setHostAuthFilesDisabled(rt, false)
+		}
 		return jsonManagementResponse(http.StatusOK, map[string]any{"status": status}), nil
 
 	case method == http.MethodPost && path == "/v0/management/aistudio2api/service/stop":
+		p.serviceStopped.Store(true)
 		status, err := rt.Admin.StopService(p.ctx)
 		if err != nil {
 			return jsonManagementResponse(http.StatusBadGateway, map[string]any{"error": err.Error(), "status": status}), nil
 		}
+		if boolOrDefault(p.Config().SyncAuthFiles, true) {
+			p.setHostAuthFilesDisabled(rt, true)
+		}
 		return jsonManagementResponse(http.StatusOK, map[string]any{"status": status}), nil
-
 	case method == http.MethodGet && path == "/v0/management/aistudio2api/accounts":
 		accounts, err := rt.Admin.Accounts(p.ctx)
 		if err != nil {
@@ -193,6 +200,9 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		created, err := rt.Admin.CreateAccount(p.ctx, input, nil)
 		if err != nil {
 			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
+		}
+		if created.Enabled {
+			p.serviceStopped.Store(false)
 		}
 		_ = p.SyncAccountToHostAuth(req.HostCallbackID, created)
 		go func() { _ = rt.EnsureRunning(p.ctx) }()
@@ -243,6 +253,9 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		}
 		if err != nil {
 			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
+		}
+		if updated.Enabled {
+			p.serviceStopped.Store(false)
 		}
 		_ = p.SyncAccountToHostAuth(req.HostCallbackID, updated)
 		go func() { _ = rt.EnsureRunning(p.ctx) }()
@@ -299,6 +312,9 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		})
 		if err != nil {
 			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
+		}
+		if created.Enabled {
+			p.serviceStopped.Store(false)
 		}
 		_ = p.SyncAccountToHostAuth(req.HostCallbackID, created)
 		go func() { _ = rt.EnsureRunning(p.ctx) }()

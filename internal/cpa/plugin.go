@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
-
 	"github.com/Mag1cFall/AIStudio2API/internal/api"
 	"github.com/Mag1cFall/AIStudio2API/internal/app"
 	"github.com/Mag1cFall/AIStudio2API/internal/config"
@@ -27,7 +27,9 @@ type Plugin struct {
 	hostCall     HostCallFunc
 	loginStateMu sync.Mutex
 	loginStates  map[string]*loginSessionState
-	chromeLogin  sync.Mutex
+	chromeLogin    sync.Mutex
+	serviceStopped atomic.Bool
+	lastRegisterNs atomic.Int64
 }
 
 type loginSessionState struct {
@@ -292,6 +294,8 @@ func (p *Plugin) applyConfig(configYAML []byte) error {
 	defer p.mu.Unlock()
 	p.pluginCfg = pcfg
 	p.appCfg = cfg
+	p.lastRegisterNs.Store(time.Now().UnixNano())
+	p.serviceStopped.Store(false)
 	if p.runtime == nil {
 		rt, err := app.NewPluginRuntime(p.ctx, cfg)
 		if err != nil {
@@ -299,30 +303,37 @@ func (p *Plugin) applyConfig(configYAML []byte) error {
 		}
 		p.runtime = rt
 		if boolOrDefault(pcfg.SyncAuthFiles, true) {
-			go p.SyncAllAccountsToHostDir(rt)
+			p.setHostAuthFilesDisabled(rt, false)
 		}
 		return nil
 	}
 	rt := p.runtime
 	if boolOrDefault(pcfg.SyncAuthFiles, true) && rt != nil {
-		go p.SyncAllAccountsToHostDir(rt)
+		p.setHostAuthFilesDisabled(rt, false)
 	}
 	return nil
 }
 
 func (p *Plugin) handleQuiesce() (any, error) {
+	p.serviceStopped.Store(true)
 	p.mu.RLock()
 	rt := p.runtime
+	syncAuth := boolOrDefault(p.pluginCfg.SyncAuthFiles, true)
 	p.mu.RUnlock()
 	if rt != nil {
 		_, _ = rt.Admin.StopService(p.ctx)
+	}
+	if syncAuth {
+		p.setHostAuthFilesDisabled(rt, true)
 	}
 	return struct{}{}, nil
 }
 
 func (p *Plugin) handleShutdown() (any, error) {
+	p.serviceStopped.Store(true)
 	p.mu.Lock()
 	rt := p.runtime
+	syncAuth := boolOrDefault(p.pluginCfg.SyncAuthFiles, true)
 	p.runtime = nil
 	cancel := p.cancel
 	p.ctx, p.cancel = context.WithCancel(context.Background())
@@ -330,6 +341,9 @@ func (p *Plugin) handleShutdown() (any, error) {
 	p.loginStateMu.Lock()
 	clear(p.loginStates)
 	p.loginStateMu.Unlock()
+	if syncAuth {
+		p.setHostAuthFilesDisabled(rt, true)
+	}
 	if rt != nil {
 		_ = rt.Close()
 	}

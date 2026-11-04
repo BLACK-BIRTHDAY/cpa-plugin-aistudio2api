@@ -80,7 +80,7 @@ func (p *Plugin) handleModelRoute(raw []byte) (any, error) {
 		return nil, err
 	}
 	model := strings.TrimSpace(req.RequestedModel)
-	if model == "" {
+	if model == "" || p.serviceStopped.Load() {
 		return pluginapi.ModelRouteResponse{Handled: false}, nil
 	}
 
@@ -138,6 +138,9 @@ func (p *Plugin) handleModelRoute(raw []byte) (any, error) {
 }
 
 func (p *Plugin) hasReadyAccount() bool {
+	if p.serviceStopped.Load() {
+		return false
+	}
 	rt, err := p.Runtime()
 	if err != nil {
 		return false

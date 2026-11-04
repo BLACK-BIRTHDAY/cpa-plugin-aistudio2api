@@ -44,6 +44,17 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 	if len(aistudioCandidates) == 0 {
 		return pluginapi.SchedulerPickResponse{Handled: false}, nil
 	}
+	if p.serviceStopped.Load() {
+		if len(aistudioCandidates) < len(req.Candidates) {
+			return pluginapi.SchedulerPickResponse{Handled: false}, nil
+		}
+		return pluginapi.SchedulerPickResponse{
+			Handled:      true,
+			Reject:       true,
+			RejectCode:   "service_stopped",
+			RejectReason: "aistudio2api service is stopped",
+		}, nil
+	}
 
 	rt, err := p.Runtime()
 	if err != nil {
