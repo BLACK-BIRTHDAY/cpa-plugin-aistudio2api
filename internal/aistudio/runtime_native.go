@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -13,10 +14,13 @@ import (
 	"github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative"
 )
 
-// NativeWorker 将单个账户的 Camoufox 或 SpiderMonkey WAA runtime 适配为受保护请求 preparer
+// NativeWorker 将单个账户的 SpiderMonkey WAA runtime 适配为受保护请求 preparer
 type NativeWorker struct {
-	accountID   string
+	accountID string
+	// runtimeMu 保护 runtime，重新载入页面后切换为新页面的 runtime
+	runtimeMu   sync.RWMutex
 	runtime     workerRuntime
+	reloadMu    sync.Mutex
 	operationMu sync.Mutex
 	stateMu     sync.RWMutex
 	state       WorkerState
@@ -36,7 +40,7 @@ func (worker *NativeWorker) Prepare(ctx context.Context, request ProtectedReques
 	if err != nil {
 		return PreparedProtectedRequest{}, fmt.Errorf("受保护请求缺少 WAA field %d: %w", request.ProofField, err)
 	}
-	proof, headers, err := worker.proofAndHeaders(ctx, request.Prompt, request.PagePrompt)
+	proof, headers, err := worker.proofAndHeaders(ctx, request.Prompt, request.PagePrompt, strings.HasSuffix(request.URL, "/GenerateContent") && request.PagePrompt != "")
 	if err != nil {
 		return PreparedProtectedRequest{}, err
 	}
@@ -46,16 +50,28 @@ func (worker *NativeWorker) Prepare(ctx context.Context, request ProtectedReques
 	return PreparedProtectedRequest{Body: body, Headers: headers}, nil
 }
 
-// proofAndHeaders 把 page 写入页面提示词后为 binding 的 SHA-256 生成 fresh proof，再取公共协议头
-func (worker *NativeWorker) proofAndHeaders(ctx context.Context, binding, page string) (string, http.Header, error) {
+// pageRunner 是写入提示词并点击 Run 后取 GenerateContent proof 的 workerRuntime
+type pageRunner interface {
+	RunProof(context.Context, string, string) (string, error)
+}
+
+// proofAndHeaders 把 page 写入页面提示词后为 binding 的 SHA-256 生成 fresh proof，run 时写入后点击 Run，再取公共协议头
+func (worker *NativeWorker) proofAndHeaders(ctx context.Context, binding, page string, run bool) (string, http.Header, error) {
 	worker.operationMu.Lock()
 	defer worker.operationMu.Unlock()
 	worker.setPhase(WorkerBusy)
 	digest := sha256.Sum256([]byte(binding))
-	proof, err := worker.runtime.Proof(ctx, fmt.Sprintf("%x", digest), page)
+	runtime := worker.current()
+	var proof string
+	var err error
+	if runner, ok := runtime.(pageRunner); ok && run {
+		proof, err = runner.RunProof(ctx, fmt.Sprintf("%x", digest), page)
+	} else {
+		proof, err = runtime.Proof(ctx, fmt.Sprintf("%x", digest), page)
+	}
 	var headers http.Header
 	if err == nil {
-		headers, err = worker.runtime.ProtocolHeaders(ctx)
+		headers, err = runtime.ProtocolHeaders(ctx)
 	}
 	if err != nil {
 		if ctx.Err() != nil {
@@ -121,12 +137,17 @@ func arrayElementSpan(body []byte, index int) (int, int, error) {
 // pageCountTokensDelay 是官网页面在 GenerateContent 发出后统计用户轮次 token 的时延
 const pageCountTokensDelay = 2200 * time.Millisecond
 
-// SendProtected 经账户 WAA runtime 流式发送已准备的请求，GenerateContent 发出 pageCountTokensDelay 后由 runtime 以相同请求头统计页面提示词的 token
+// SendProtected 经账户 WAA runtime 流式发送已准备的请求
 func (worker *NativeWorker) SendProtected(ctx context.Context, request ProtectedRequest) (*RPCResponse, error) {
 	if body, ok := countTokensBody(request); ok {
-		ctx = camoufoxnative.WithFollowUp(ctx, camoufoxnative.FollowUp{URL: makerSuiteRPCURL + "CountTokens", Body: body, Delay: pageCountTokensDelay})
+		ctx = withFollowUp(ctx, followUp{URL: makerSuiteRPCURL + "CountTokens", Body: body, Delay: pageCountTokensDelay})
 	}
-	response, err := worker.runtime.SendProtected(ctx, request.URL, request.Headers, request.Body)
+	headers := request.Headers
+	if strings.HasSuffix(request.URL, "/GenerateContent") {
+		headers = headers.Clone()
+		headers.Set("Priority", "u=0")
+	}
+	response, err := worker.current().SendProtected(ctx, request.URL, headers, request.Body)
 	if err != nil {
 		if ctx.Err() == nil {
 			worker.setPhase(WorkerFailed)
@@ -156,7 +177,7 @@ func countTokensBody(generate ProtectedRequest) ([]byte, bool) {
 
 // BrowserStorageState 返回账户 WAA runtime 当前 Cookie 状态
 func (worker *NativeWorker) BrowserStorageState(ctx context.Context) (StorageState, error) {
-	encoded, err := worker.runtime.StorageCookies(ctx)
+	encoded, err := worker.current().StorageCookies(ctx)
 	if err != nil {
 		return StorageState{}, err
 	}
@@ -171,9 +192,42 @@ func (worker *NativeWorker) BrowserStorageState(ctx context.Context) (StorageSta
 	return state, nil
 }
 
+// PageCatalog 返回账户当前页面载入时目录 RPC 的响应正文
+func (worker *NativeWorker) PageCatalog() camoufoxnative.PageCatalog {
+	return worker.current().PageCatalog()
+}
+
 // ProtocolHeaders 返回当前账户官网请求的动态公共头
 func (worker *NativeWorker) ProtocolHeaders(ctx context.Context, _ string) (http.Header, error) {
-	return worker.runtime.ProtocolHeaders(ctx)
+	return worker.current().ProtocolHeaders(ctx)
+}
+
+// current 返回账户当前页面的 runtime
+func (worker *NativeWorker) current() workerRuntime {
+	worker.runtimeMu.RLock()
+	defer worker.runtimeMu.RUnlock()
+	return worker.runtime
+}
+
+// Reload 按官网冷启动重新载入账户页面，新页面就绪后切换，切换前已发出的请求在原页面上完成
+func (worker *NativeWorker) Reload(ctx context.Context) error {
+	worker.reloadMu.Lock()
+	defer worker.reloadMu.Unlock()
+	previous := worker.current()
+	next, err := previous.Reload(ctx)
+	if err != nil || next == previous {
+		return err
+	}
+	worker.operationMu.Lock()
+	if phase := worker.State().Phase; phase == WorkerClosing || phase == WorkerClosed {
+		worker.operationMu.Unlock()
+		return errors.Join(errors.New("WAA runtime 已关闭"), next.Close())
+	}
+	worker.runtimeMu.Lock()
+	worker.runtime = next
+	worker.runtimeMu.Unlock()
+	worker.operationMu.Unlock()
+	return previous.Close()
 }
 
 // State 返回账户 WAA runtime 状态
@@ -188,7 +242,7 @@ func (worker *NativeWorker) Close() error {
 	worker.operationMu.Lock()
 	defer worker.operationMu.Unlock()
 	worker.setPhase(WorkerClosing)
-	err := worker.runtime.Close()
+	err := worker.current().Close()
 	if err == nil {
 		worker.setPhase(WorkerClosed)
 	}

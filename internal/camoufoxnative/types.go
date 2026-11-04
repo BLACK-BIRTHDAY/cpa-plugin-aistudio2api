@@ -31,26 +31,28 @@ const (
 	StartupBootstrappingWAA StartupStage = "bootstrapping_waa"
 )
 
-// DefaultBootstrapPrompt 是 Options 未指定 BootstrapPrompt 时 WAA bootstrap 使用的默认提示词
-const DefaultBootstrapPrompt = "Hello"
-
 // Options 定义单个 AI Studio 账户的 WAA runtime 配置
 type Options struct {
 	ExecutablePath   string
 	StorageStatePath string
 	Model            string
-	BootstrapPrompt  string
 	Locale           string
 	Timezone         string
 	Proxy            string
 	ProxyBypass      string
 	Headless         bool
-	TemporaryChat    bool
 	AuthUser         int
 	CacheDirectory   string
 	ReadyTimeout     time.Duration
 	Log              io.Writer
 	StartupProgress  func(StartupStage)
+}
+
+// PageCatalog 是会话页面载入时 GetLoggingContext、GetAiStudioBenefitTier 与 ListModels 的响应正文
+type PageCatalog struct {
+	Logging []byte
+	Tier    []byte
+	Models  []byte
 }
 
 // State 返回 WAA runtime 的当前页面与 bootstrap 结果

@@ -13,7 +13,7 @@ import (
 
 const (
 	PluginID      = "aistudio2api"
-	PluginVersion = "1.1.1"
+	PluginVersion = "1.1.2"
 	ProviderID    = "aistudio2api"
 )
 
@@ -32,10 +32,10 @@ type PluginConfig struct {
 	ModelAliases          string   `json:"model_aliases" yaml:"model_aliases"`
 	BuildNativeNonstream  *bool    `json:"build_native_nonstream" yaml:"build_native_nonstream"`
 	NonstreamKeepalive    *bool    `json:"nonstream_keepalive" yaml:"nonstream_keepalive"`
-	FakeStream            *bool    `json:"fake_stream" yaml:"fake_stream"`
-	TemporaryChat         *bool    `json:"temporary_chat" yaml:"temporary_chat"`
-	YouTubeLinks          *bool    `json:"youtube_links" yaml:"youtube_links"`
-	FirstEventHedge       string   `json:"first_event_hedge" yaml:"first_event_hedge"`
+	FakeStream             *bool  `json:"fake_stream" yaml:"fake_stream"`
+	StripThoughtSignatures *bool  `json:"strip_thought_signatures" yaml:"strip_thought_signatures"`
+	YouTubeLinks           *bool  `json:"youtube_links" yaml:"youtube_links"`
+	FirstEventHedge        string `json:"first_event_hedge" yaml:"first_event_hedge"`
 	SearchModelAliases    *bool    `json:"search_model_aliases" yaml:"search_model_aliases"`
 	GoogleSearch          *bool    `json:"google_search" yaml:"google_search"`
 	ContinuationRewrite   *bool    `json:"continuation_rewrite" yaml:"continuation_rewrite"`
@@ -108,8 +108,8 @@ func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
 			if pcfg.FakeStream == nil {
 				pcfg.FakeStream = opt.FakeStream
 			}
-			if pcfg.TemporaryChat == nil {
-				pcfg.TemporaryChat = opt.TemporaryChat
+			if pcfg.StripThoughtSignatures == nil {
+				pcfg.StripThoughtSignatures = opt.StripThoughtSignatures
 			}
 			if pcfg.YouTubeLinks == nil {
 				pcfg.YouTubeLinks = opt.YouTubeLinks
@@ -228,7 +228,7 @@ func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
 	cfg.BuildNativeNonstream = boolOrDefault(pcfg.BuildNativeNonstream, true)
 	cfg.NonstreamKeepalive = boolOrDefault(pcfg.NonstreamKeepalive, false)
 	cfg.FakeStream = boolOrDefault(pcfg.FakeStream, false)
-	cfg.TemporaryChat = boolOrDefault(pcfg.TemporaryChat, true)
+	cfg.StripThoughtSignatures = boolOrDefault(pcfg.StripThoughtSignatures, false)
 	cfg.YouTubeLinks = boolOrDefault(pcfg.YouTubeLinks, true)
 	cfg.FirstEventHedge = hedge
 	cfg.SearchModelAliases = boolOrDefault(pcfg.SearchModelAliases, true)

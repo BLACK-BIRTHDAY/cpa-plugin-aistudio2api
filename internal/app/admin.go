@@ -28,7 +28,6 @@ type runtimeAdmin struct {
 	requests    *requestRegistry
 	login       aistudio.IsolatedLoginDriver
 	workers     *accountWorkerManager
-	headers     *accountHeaderProvider
 	configPath  string
 	config      config.Config
 	proxies     *aistudio.ProxyPool
@@ -67,12 +66,11 @@ func newRuntimeAdmin(
 	registry *requestRegistry,
 	login aistudio.IsolatedLoginDriver,
 	workers *accountWorkerManager,
-	headers *accountHeaderProvider,
 	cfg config.Config,
 ) *runtimeAdmin {
 	return &runtimeAdmin{
 		lifecycle: lifecycle, pool: pool, store: store, service: service, requests: registry, login: login,
-		workers: workers, headers: headers,
+		workers:    workers,
 		configPath: ".env", config: cfg,
 	}
 }
@@ -101,6 +99,7 @@ func (admin *runtimeAdmin) Status(context.Context) (api.AdminStatus, error) {
 		Version:        buildVersion(),
 		ActiveRequests: admin.requests.count(),
 		Accounts:       counts,
+		ChromeImport:   false,
 		Camoufox:       api.AdminCamoufox{Ready: true},
 	}
 	return status, nil
@@ -200,7 +199,13 @@ func (admin *runtimeAdmin) DiscoverCookieAccounts(ctx context.Context, input api
 	if err != nil {
 		return nil, invalidAccount(err)
 	}
-	return cookieAccountEntries(api.CookieBrowser{}, accounts, admin.accountIDs()), nil
+	return cookieAccountEntries(api.CookieBrowser{DeviceBound: deviceBoundSession(state)}, accounts, admin.accountIDs()), nil
+}
+
+// deviceBoundSession 表示 Cookie 带 __Secure-1PSIDRTS，会话绑定签发它的设备
+func deviceBoundSession(state aistudio.StorageState) bool {
+	_, bound := state.CookieValue("__Secure-1PSIDRTS", "https://aistudio.google.com", time.Now())
+	return bound
 }
 
 // cookieAccountEntries 以 template 为模板为每个会话账户生成一项并标记已导入的账户，没有账户时只返回 template
@@ -294,6 +299,11 @@ func (admin *runtimeAdmin) ImportAccountState(ctx context.Context, input api.Acc
 	if err != nil {
 		return api.AdminAccount{}, err
 	}
+	if input.RenewalToken != "" {
+		if err := admin.savePairingRenewal(account.ID, input.RenewalToken); err != nil {
+			return api.AdminAccount{}, err
+		}
+	}
 	admin.requests.log("auth", "INFO", "认证状态账户已导入 | 账户="+account.Label)
 	return account, nil
 }
@@ -321,17 +331,14 @@ func (admin *runtimeAdmin) addAccount(
 	if strings.TrimSpace(account.Config.Proxy) == "" {
 		account.SetPoolProxy(admin.proxies.Next())
 	}
-	if err := admin.headers.Add(account); err != nil {
-		return api.AdminAccount{}, errors.Join(err, admin.store.Delete(account))
-	}
 	if err := admin.workers.Add(account); err != nil {
-		return api.AdminAccount{}, errors.Join(err, admin.headers.Remove(account.ID), admin.store.Delete(account))
+		return api.AdminAccount{}, errors.Join(err, admin.store.Delete(account))
 	}
 	if err := admin.service.changeModels(func() error {
 		return admin.pool.Add(account)
 	}); err != nil {
 		return api.AdminAccount{}, errors.Join(
-			err, admin.workers.Remove(account.ID), admin.headers.Remove(account.ID), admin.store.Delete(account),
+			err, admin.workers.Remove(account.ID), admin.store.Delete(account),
 		)
 	}
 	if err := publishLease.Release(); err != nil {
@@ -367,24 +374,17 @@ func (admin *runtimeAdmin) UpdateAccount(ctx context.Context, accountID string, 
 	if accountConfig.Proxy == "" && !admin.proxies.Available(account.PoolProxy("")) {
 		account.SetPoolProxy(admin.proxies.Next())
 	}
-	headerUpdate, err := admin.headers.prepareUpdate(account, accountConfig)
-	if err != nil {
-		return api.AdminAccount{}, errors.Join(err, lease.Release())
-	}
 	workerUpdate, err := admin.workers.prepareUpdate(account, accountConfig)
 	if err != nil {
-		headerUpdate.Discard()
 		return api.AdminAccount{}, errors.Join(err, lease.Release())
 	}
 	if err := admin.service.changeModels(func() error {
 		return lease.SaveConfig(accountConfig)
 	}); err != nil {
 		workerUpdate.Discard()
-		headerUpdate.Discard()
 		return api.AdminAccount{}, errors.Join(err, lease.Release())
 	}
 	workerUpdate.Commit()
-	headerUpdate.Commit()
 	if err := lease.Release(); err != nil {
 		return api.AdminAccount{}, err
 	}
@@ -420,7 +420,7 @@ func (admin *runtimeAdmin) DeleteAccount(_ context.Context, accountID string) er
 		return accountOperationError(err)
 	}
 	admin.service.removeAccountModelRetry(accountID)
-	if err := errors.Join(admin.workers.Remove(accountID), admin.headers.Remove(accountID)); err != nil {
+	if err := admin.workers.Remove(accountID); err != nil {
 		return err
 	}
 	admin.requests.log("auth", "INFO", "账户已删除 | 账户="+account.Label)
@@ -756,6 +756,7 @@ func adminAccountDTO(status aistudio.AccountStatus) api.AdminAccount {
 		ID: status.ID, Label: status.Label, Enabled: status.Enabled, State: string(status.State),
 		Proxy: status.Proxy, Egress: status.Egress, Locale: status.Locale, Timezone: status.Timezone,
 		Models: status.Models, BenefitTier: status.BenefitTier, Message: status.Message,
+		PairingRenewedAt: pairingRenewedAt(status.Directory),
 	}
 }
 
@@ -813,13 +814,14 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 		RequestBodyLog: value.RequestBodyLog,
 		LogFile:        value.LogFile, LogMaxTotalMB: value.LogMaxTotalMB,
 		AdminAuthEnabled: value.AdminAuthEnabled, AdminUsername: strings.TrimSpace(value.AdminUsername), AdminPassword: password,
-		BuildNativeNonstream: value.BuildNativeNonstream,
-		NonstreamKeepalive:   value.NonstreamKeepalive, FakeStream: value.FakeStream, YouTubeLinks: value.YouTubeLinks,
-		SearchModelAliases: value.SearchModelAliases, GoogleSearch: value.GoogleSearch,
-		ContinuationRewrite: value.ContinuationRewrite, ContinuationPrompt: strings.TrimSpace(value.ContinuationPrompt),
-		FirstEventHedge: strings.ToLower(strings.TrimSpace(value.FirstEventHedge)), FirstEventHedgeModels: strings.TrimSpace(value.FirstEventHedgeModels), AuthStates: value.AuthStates, ListenAddr: value.ListenAddr, PreviewListenAddr: value.PreviewListenAddr,
-		ProxyAPIKey: value.APIKey, Proxy: value.Proxy, InitTimeout: initTimeout, RequestTimeout: requestTimeout,
-		WarmWorkerLimit: value.WarmWorkerLimit, MaxActiveWorkers: value.MaxActiveWorkers,
+		BuildNativeNonstream:   value.BuildNativeNonstream,
+		NonstreamKeepalive:     value.NonstreamKeepalive, FakeStream: value.FakeStream, YouTubeLinks: value.YouTubeLinks,
+		StripThoughtSignatures: value.StripThoughtSignatures,
+		SearchModelAliases:     value.SearchModelAliases, GoogleSearch: value.GoogleSearch,
+		ContinuationRewrite:    value.ContinuationRewrite, ContinuationPrompt: strings.TrimSpace(value.ContinuationPrompt),
+		FirstEventHedge:        strings.ToLower(strings.TrimSpace(value.FirstEventHedge)), FirstEventHedgeModels: strings.TrimSpace(value.FirstEventHedgeModels), AuthStates: value.AuthStates, ListenAddr: value.ListenAddr, PreviewListenAddr: value.PreviewListenAddr,
+		ProxyAPIKey:            value.APIKey, Proxy: value.Proxy, InitTimeout: initTimeout, RequestTimeout: requestTimeout,
+		WarmWorkerLimit:        value.WarmWorkerLimit, MaxActiveWorkers: value.MaxActiveWorkers,
 		WarmStartupConcurrency: value.WarmStartupConcurrency,
 		PerAccountConcurrency:  value.PerAccountConcurrency,
 		RoutingStrategy:        value.RoutingStrategy,
@@ -827,7 +829,6 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 		ModelMapping:           strings.TrimSpace(value.ModelMapping),
 		ModelChannels:          strings.TrimSpace(value.ModelChannels),
 		APIKeyAccounts:         strings.TrimSpace(value.APIKeyAccounts),
-		TemporaryChat:          value.TemporaryChat,
 		WAABackend:             value.WAABackend,
 		MediaOutput:            strings.ToLower(strings.TrimSpace(value.MediaOutput)),
 		MediaBaseURL:           strings.TrimSpace(value.MediaBaseURL),
@@ -1112,15 +1113,16 @@ func runtimeConfigDTO(cfg config.Config) api.RuntimeConfig {
 		LogFile:        cfg.LogFile, LogMaxTotalMB: cfg.LogMaxTotalMB,
 		AdminAuthEnabled: cfg.AdminAuthEnabled, AdminUsername: cfg.AdminUsername,
 		AdminPasswordSet: cfg.AdminPassword != "", SavedAdminPassword: cfg.AdminPassword,
-		BuildNativeNonstream: cfg.BuildNativeNonstream,
-		NonstreamKeepalive:   cfg.NonstreamKeepalive, FakeStream: cfg.FakeStream, YouTubeLinks: cfg.YouTubeLinks,
-		SearchModelAliases: cfg.SearchModelAliases, GoogleSearch: cfg.GoogleSearch,
-		ContinuationRewrite: cfg.ContinuationRewrite, ContinuationPrompt: cfg.ContinuationPrompt,
-		FirstEventHedge: cfg.FirstEventHedge, FirstEventHedgeModels: cfg.FirstEventHedgeModels, AuthStates: cfg.AuthStates, ListenAddr: cfg.ListenAddr, APIKey: cfg.ProxyAPIKey,
-		ActiveListenAddr: cfg.ListenAddr, ActiveAPIKey: cfg.ProxyAPIKey,
-		PreviewListenAddr: cfg.PreviewListenAddr, ActivePreviewListenAddr: cfg.PreviewListenAddr,
-		Proxy: cfg.Proxy, InitTimeout: cfg.InitTimeout.String(), RequestTimeout: cfg.RequestTimeout.String(),
-		WarmWorkerLimit: cfg.WarmWorkerLimit, MaxActiveWorkers: cfg.MaxActiveWorkers,
+		BuildNativeNonstream:   cfg.BuildNativeNonstream,
+		NonstreamKeepalive:     cfg.NonstreamKeepalive, FakeStream: cfg.FakeStream, YouTubeLinks: cfg.YouTubeLinks,
+		StripThoughtSignatures: cfg.StripThoughtSignatures,
+		SearchModelAliases:     cfg.SearchModelAliases, GoogleSearch: cfg.GoogleSearch,
+		ContinuationRewrite:    cfg.ContinuationRewrite, ContinuationPrompt: cfg.ContinuationPrompt,
+		FirstEventHedge:        cfg.FirstEventHedge, FirstEventHedgeModels: cfg.FirstEventHedgeModels, AuthStates: cfg.AuthStates, ListenAddr: cfg.ListenAddr, APIKey: cfg.ProxyAPIKey,
+		ActiveListenAddr:       cfg.ListenAddr, ActiveAPIKey: cfg.ProxyAPIKey,
+		PreviewListenAddr:      cfg.PreviewListenAddr, ActivePreviewListenAddr: cfg.PreviewListenAddr,
+		Proxy:                  cfg.Proxy, InitTimeout: cfg.InitTimeout.String(), RequestTimeout: cfg.RequestTimeout.String(),
+		WarmWorkerLimit:        cfg.WarmWorkerLimit, MaxActiveWorkers: cfg.MaxActiveWorkers,
 		WarmStartupConcurrency: cfg.WarmStartupConcurrency,
 		PerAccountConcurrency:  cfg.PerAccountConcurrency,
 		RoutingStrategy:        cfg.RoutingStrategy,
@@ -1128,7 +1130,6 @@ func runtimeConfigDTO(cfg config.Config) api.RuntimeConfig {
 		ModelMapping:           cfg.ModelMapping,
 		ModelChannels:          cfg.ModelChannels,
 		APIKeyAccounts:         cfg.APIKeyAccounts,
-		TemporaryChat:          cfg.TemporaryChat,
 		WAABackend:             cfg.WAABackend,
 		MediaOutput:            cfg.MediaOutput,
 		MediaBaseURL:           cfg.MediaBaseURL,

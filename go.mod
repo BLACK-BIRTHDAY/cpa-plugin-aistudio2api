@@ -3,7 +3,8 @@ module github.com/Mag1cFall/AIStudio2API
 go 1.27
 
 require (
-	github.com/Mag1cFall/fhttp v0.6.8-firefox.1
+	github.com/HugoSmits86/nativewebp v1.3.0
+	github.com/Mag1cFall/fhttp v0.6.8-firefox.2
 	github.com/Mag1cFall/go-sentencepiece v0.7.1
 	github.com/Mag1cFall/uquic v0.0.6-firefox.6
 	github.com/Mag1cFall/utls v1.8.2-firefox.3
@@ -26,6 +27,7 @@ require (
 	github.com/tphakala/go-aac v0.7.0
 	github.com/tphakala/go-mp3 v0.1.0
 	github.com/zaf/g711 v1.4.0
+	golang.org/x/image v0.41.0
 	golang.org/x/net v0.60.0
 	golang.org/x/sync v0.23.0
 	golang.org/x/sys v0.48.0

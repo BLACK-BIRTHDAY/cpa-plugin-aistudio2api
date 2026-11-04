@@ -440,15 +440,6 @@ func defaultFallbackModels() []aistudio.Model {
 			Capabilities:     map[string]bool{"image_generation": true},
 		},
 		{
-			ID:               "models/veo-2.0-generate-001",
-			Name:             "Veo 2",
-			Description:      "Google AI Studio Veo 2 video generation",
-			Methods:          []string{"predictLongRunning"},
-			InputTokenLimit:  480,
-			OutputTokenLimit: 1,
-			Capabilities:     map[string]bool{"video_generation": true},
-		},
-		{
 			ID:               "models/gemini-embedding-001",
 			Name:             "Gemini Embedding 001",
 			Description:      "Google AI Studio text embedding model",
