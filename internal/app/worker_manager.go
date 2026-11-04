@@ -937,6 +937,11 @@ func (manager *accountWorkerManager) startReservedWorker(
 		))
 		return nil, &accountWorkerInitError{err: initErr, proxy: options.Proxy}
 	}
+	if lease, ok := aistudio.AccountLeaseFromContext(ctx); ok && lease != nil {
+		if browserState, stateErr := worker.BrowserStorageState(ctx); stateErr == nil && len(browserState.Cookies) > 0 {
+			_ = lease.ReplaceCookies(browserState.Cookies)
+		}
+	}
 	return &accountWorkerPreparer{
 		account: account, worker: worker, bootstrapModel: bootstrapModel, manager: manager,
 		runtimeLease: runtimeLease, ownsLease: ownsLease, startedAt: startedAt, pending: true,

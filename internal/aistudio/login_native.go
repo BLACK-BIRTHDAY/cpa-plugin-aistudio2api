@@ -229,6 +229,7 @@ func (driver *NativeLoginDriver) Login(ctx context.Context, request IsolatedLogi
 		"--user-data-dir=" + userDataDir,
 		"--remote-debugging-port=0",
 		"--disable-blink-features=AutomationControlled",
+		"--disable-features=EnableBoundSessionCredentials,DeviceBoundSessions,PersistDeviceBoundSessions,EnableChromeRefreshTokenBinding",
 		"--exclude-switches=enable-automation",
 		"--no-first-run",
 		"--no-default-browser-check",
