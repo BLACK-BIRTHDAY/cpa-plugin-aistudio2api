@@ -120,7 +120,11 @@ func (admin *runtimeAdmin) CreateAccount(ctx context.Context, input api.AccountC
 	if locale := strings.TrimSpace(input.Locale); locale != "" {
 		accountConfig.Locale = locale
 	}
-	if timezone := strings.TrimSpace(input.Timezone); timezone != "" {
+	timezone, err := accountTimezone(input.Timezone)
+	if err != nil {
+		return api.AdminAccount{}, invalidAccount(err)
+	}
+	if timezone != "" {
 		accountConfig.Timezone = timezone
 	}
 	if err := config.ValidateProxy(accountConfig.Proxy); err != nil {
@@ -238,6 +242,10 @@ func (admin *runtimeAdmin) ImportChromeAccounts(context.Context, api.ChromeImpor
 
 // ImportAccountState 导入远程配对上传或 Cookie 导入的认证状态与 Camoufox 指纹，未给标签时以 Cookie 中第 auth_user 个会话登录的账户邮箱为标签
 func (admin *runtimeAdmin) ImportAccountState(ctx context.Context, input api.AccountStateInput) (api.AdminAccount, error) {
+	timezone, err := accountTimezone(input.Timezone)
+	if err != nil {
+		return api.AdminAccount{}, invalidAccount(err)
+	}
 	label := strings.TrimSpace(input.Label)
 	if label == "" {
 		verification, err := chromeauth.VerifyAuthUser(ctx, &input.StorageState, admin.effectiveProxy(input.Proxy), input.AuthUser)
@@ -255,7 +263,7 @@ func (admin *runtimeAdmin) ImportAccountState(ctx context.Context, input api.Acc
 	if locale := strings.TrimSpace(input.Locale); locale != "" {
 		accountConfig.Locale = locale
 	}
-	if timezone := strings.TrimSpace(input.Timezone); timezone != "" {
+	if timezone != "" {
 		accountConfig.Timezone = timezone
 	}
 	if err := accountConfig.Validate(); err != nil {
@@ -360,7 +368,11 @@ func (admin *runtimeAdmin) UpdateAccount(ctx context.Context, accountID string, 
 	accountConfig.Enabled = input.Enabled
 	accountConfig.Proxy = strings.TrimSpace(input.Proxy)
 	accountConfig.Locale = strings.TrimSpace(input.Locale)
-	accountConfig.Timezone = strings.TrimSpace(input.Timezone)
+	timezone, err := accountTimezone(input.Timezone)
+	if err != nil {
+		return api.AdminAccount{}, invalidAccount(err)
+	}
+	accountConfig.Timezone = timezone
 	if err := accountConfig.Validate(); err != nil {
 		return api.AdminAccount{}, invalidAccount(err)
 	}
@@ -758,6 +770,18 @@ func adminAccountDTO(status aistudio.AccountStatus) api.AdminAccount {
 		Models: status.Models, BenefitTier: status.BenefitTier, Message: status.Message,
 		PairingRenewedAt: pairingRenewedAt(status.Directory),
 	}
+}
+
+// accountTimezone 返回去掉不可见字符后的账户时区，为空时返回空串，无法加载时返回带原值的错误
+func accountTimezone(value string) (string, error) {
+	timezone := aistudio.NormalizeTimezone(value)
+	if timezone == "" {
+		return "", nil
+	}
+	if _, err := time.LoadLocation(timezone); err != nil {
+		return "", fmt.Errorf("账户 timezone 无效: %q", value)
+	}
+	return timezone, nil
 }
 
 func invalidAccount(err error) error {

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"hash/fnv"
 	"slices"
 	"strings"
 	"time"
@@ -14,93 +13,18 @@ import (
 )
 
 // toolContract 保存客户端显式要求的调用模式与参数约束
-const maxGeminiFunctionNameLen = 63
-
 type toolContract struct {
-	required       bool
-	parallel       *bool
-	names          map[string]bool
-	schemas        map[string]*jsonschema.Schema
-	serverSide     bool
-	wireToOriginal map[string]string
-}
-
-func shortenGeminiFunctionName(name string, used map[string]string) string {
-	if len(name) <= maxGeminiFunctionNameLen {
-		return name
-	}
-	candidate := name[:maxGeminiFunctionNameLen]
-	if prev, exists := used[candidate]; !exists || prev == name {
-		return candidate
-	}
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(name))
-	suffix := fmt.Sprintf("_%08x", h.Sum32())
-	return name[:maxGeminiFunctionNameLen-len(suffix)] + suffix
-}
-
-func rewriteContentsFunctionNames(contents []Content, origToWire map[string]string, used map[string]string) []Content {
-	changed := false
-	for _, c := range contents {
-		for _, p := range c.Parts {
-			if p.FunctionCall != nil && len(p.FunctionCall.Name) > maxGeminiFunctionNameLen {
-				changed = true
-				break
-			}
-			if p.FunctionResult != nil && len(p.FunctionResult.Name) > maxGeminiFunctionNameLen {
-				changed = true
-				break
-			}
-		}
-		if changed {
-			break
-		}
-	}
-	if !changed {
-		return contents
-	}
-	cloned := make([]Content, len(contents))
-	for i, c := range contents {
-		cloned[i] = c
-		if len(c.Parts) == 0 {
-			continue
-		}
-		parts := make([]Part, len(c.Parts))
-		for j, p := range c.Parts {
-			if p.FunctionCall != nil && len(p.FunctionCall.Name) > maxGeminiFunctionNameLen {
-				callCopy := *p.FunctionCall
-				if wire, ok := origToWire[callCopy.Name]; ok {
-					callCopy.Name = wire
-				} else {
-					wire := shortenGeminiFunctionName(callCopy.Name, used)
-					used[wire] = callCopy.Name
-					callCopy.Name = wire
-				}
-				p.FunctionCall = &callCopy
-			}
-			if p.FunctionResult != nil && len(p.FunctionResult.Name) > maxGeminiFunctionNameLen {
-				resCopy := *p.FunctionResult
-				if wire, ok := origToWire[resCopy.Name]; ok {
-					resCopy.Name = wire
-				} else {
-					wire := shortenGeminiFunctionName(resCopy.Name, used)
-					used[wire] = resCopy.Name
-					resCopy.Name = wire
-				}
-				p.FunctionResult = &resCopy
-			}
-			parts[j] = p
-		}
-		cloned[i].Parts = parts
-	}
-	return cloned
+	required   bool
+	parallel   *bool
+	names      map[string]bool
+	schemas    map[string]*jsonschema.Schema
+	serverSide bool
 }
 
 // prepareToolRequest 将工具选择与约束转换为共同生成请求
 func prepareToolRequest(request GenerateRequest) (GenerateRequest, *toolContract, error) {
 	config := request.Tools.ToolConfig
 	if config.Mode == "none" {
-		request.Contents = rewriteContentsFunctionNames(request.Contents, nil, map[string]string{})
 		return request, nil, nil
 	}
 	if search := request.Tools.GoogleSearch; search != nil {
@@ -125,46 +49,22 @@ func prepareToolRequest(request GenerateRequest) (GenerateRequest, *toolContract
 			request.System = appendSystem(request.System, "\nNever read URLs on these domains or their subdomains: "+strings.Join(fetch.BlockedDomains, ", "))
 		}
 	}
-	contract := &toolContract{
-		required:       config.Mode == "required",
-		parallel:       config.ParallelCalls,
-		names:          map[string]bool{},
-		schemas:        map[string]*jsonschema.Schema{},
-		wireToOriginal: map[string]string{},
-	}
+	contract := &toolContract{required: config.Mode == "required", parallel: config.ParallelCalls, names: map[string]bool{}, schemas: map[string]*jsonschema.Schema{}}
 	if contract.parallel != nil && *contract.parallel || len(request.Tools.Functions) == 0 {
 		contract.parallel = nil
 	}
-	usedWireNames := make(map[string]string, len(request.Tools.Functions))
-	origToWire := make(map[string]string)
-	for _, declaration := range request.Tools.Functions {
-		if len(declaration.Name) <= maxGeminiFunctionNameLen {
-			usedWireNames[declaration.Name] = declaration.Name
-		}
-	}
-	renamedFunctions := false
 	functions := make([]FunctionDeclaration, 0, len(request.Tools.Functions))
 	for _, declaration := range request.Tools.Functions {
-		origName := declaration.Name
-		if len(config.AllowedFunctionNames) > 0 && !slices.Contains(config.AllowedFunctionNames, origName) {
+		if len(config.AllowedFunctionNames) > 0 && !slices.Contains(config.AllowedFunctionNames, declaration.Name) {
 			continue
 		}
-		if contract.names[origName] {
-			return request, nil, fmt.Errorf("function %q 重复", origName)
-		}
-		wireName := shortenGeminiFunctionName(origName, usedWireNames)
-		usedWireNames[wireName] = origName
-		if wireName != origName {
-			origToWire[origName] = wireName
-			contract.wireToOriginal[wireName] = origName
-			declaration.Name = wireName
-			renamedFunctions = true
+		if contract.names[declaration.Name] {
+			return request, nil, fmt.Errorf("function %q 重复", declaration.Name)
 		}
 		if config.Mode == "validated" {
 			declaration.Strict = true
 		}
-		contract.names[origName] = true
-		contract.names[wireName] = true
+		contract.names[declaration.Name] = true
 		functions = append(functions, declaration)
 		if !declaration.Strict && config.Mode != "validated" {
 			continue
@@ -186,8 +86,7 @@ func prepareToolRequest(request GenerateRequest) (GenerateRequest, *toolContract
 			return request, nil, err
 		}
 		if schema, err := compiler.Compile(resource); err == nil {
-			contract.schemas[origName] = schema
-			contract.schemas[wireName] = schema
+			contract.schemas[declaration.Name] = schema
 		}
 	}
 	for _, name := range config.AllowedFunctionNames {
@@ -199,21 +98,9 @@ func prepareToolRequest(request GenerateRequest) (GenerateRequest, *toolContract
 	if contract.required && len(functions) == 0 && !contract.serverSide {
 		return request, nil, fmt.Errorf("required tool choice 需要至少一个工具")
 	}
-	if len(config.AllowedFunctionNames) > 0 || config.Mode == "validated" || renamedFunctions {
+	if len(config.AllowedFunctionNames) > 0 || config.Mode == "validated" {
 		request.Tools.Functions = functions
 	}
-	if renamedFunctions && len(config.AllowedFunctionNames) > 0 {
-		allowed := make([]string, len(config.AllowedFunctionNames))
-		for i, name := range config.AllowedFunctionNames {
-			if wire, ok := origToWire[name]; ok {
-				allowed[i] = wire
-			} else {
-				allowed[i] = name
-			}
-		}
-		request.Tools.ToolConfig.AllowedFunctionNames = allowed
-	}
-	request.Contents = rewriteContentsFunctionNames(request.Contents, origToWire, usedWireNames)
 	if contract.required {
 		names := make([]string, 0, len(functions))
 		for _, declaration := range functions {
@@ -235,7 +122,7 @@ func prepareToolRequest(request GenerateRequest) (GenerateRequest, *toolContract
 	if contract.parallel != nil {
 		request.System = appendSystem(request.System, "\nCall at most one function in this response.")
 	}
-	if !contract.required && len(config.AllowedFunctionNames) == 0 && len(contract.schemas) == 0 && contract.parallel == nil && len(contract.wireToOriginal) == 0 {
+	if !contract.required && len(config.AllowedFunctionNames) == 0 && len(contract.schemas) == 0 && contract.parallel == nil {
 		contract = nil
 	}
 	return request, contract, nil
@@ -334,9 +221,6 @@ func (contract *toolContract) forward(ctx context.Context, source <-chan Event) 
 			if event.Kind == EventToolCall && event.FunctionCall != nil {
 				calls++
 				call := event.FunctionCall
-				if orig, ok := contract.wireToOriginal[call.Name]; ok {
-					call.Name = orig
-				}
 				switch {
 				case !contract.names[call.Name]:
 					err = fmt.Errorf("上游返回了未选择的函数 %q", call.Name)

@@ -1,6 +1,7 @@
 # Build artifacts & downloaded SpiderMonkey static libraries
 /dist/
 /spidermonkey/
+/libwebp/
 *.dylib
 *.so
 *.dll
