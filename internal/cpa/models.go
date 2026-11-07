@@ -255,6 +255,15 @@ func (p *Plugin) collectCatalogModelsForAccount(accountID string) []pluginapi.Mo
 			addModel(searchInfo)
 		}
 	}
+
+	// Always ensure standard compatibility models (such as imagen-3.0-generate-002 and gemini-embedding-001)
+	// from defaultFallbackModels are available for accounts so host and clients get a consistent, complete catalog.
+	for _, m := range defaultFallbackModels() {
+		info := convertAIStudioModel(m)
+		if info.ID != "" {
+			addModel(info)
+		}
+	}
 	p.mu.RLock()
 	mappingStr := p.appCfg.ModelMapping
 	p.mu.RUnlock()
@@ -311,10 +320,7 @@ func convertAIStudioModel(m aistudio.Model) pluginapi.ModelInfo {
 	if id == "" {
 		return pluginapi.ModelInfo{}
 	}
-	displayName := strings.TrimSpace(m.Name)
-	if displayName == "" {
-		displayName = id
-	}
+	displayName := cleanAIStudioDisplayName(id, m.Name)
 	inLimit := m.InputTokenLimit
 	if inLimit <= 0 {
 		inLimit = 1048576
@@ -370,7 +376,7 @@ func convertAIStudioModel(m aistudio.Model) pluginapi.ModelInfo {
 		DisplayName:                displayName,
 		Name:                       "models/" + id,
 		Version:                    m.Version,
-		Description:                m.Description,
+		Description:                cleanAIStudioDescription(id, m.Description),
 		InputTokenLimit:            inLimit,
 		OutputTokenLimit:           outLimit,
 		ContextLength:              inLimit,
@@ -448,7 +454,7 @@ func defaultFallbackModels() []aistudio.Model {
 		},
 		{
 			ID:               "models/gemini-2.5-flash-image-preview",
-			Name:             "Gemini 2.5 Flash Image Preview (Nano Banana)",
+			Name:             "Gemini 2.5 Flash Image Preview",
 			Description:      "Google AI Studio native multimodal image generation & editing",
 			Methods:          []string{"generateContent", "streamGenerateContent", "countTokens"},
 			InputTokenLimit:  32768,
@@ -476,7 +482,7 @@ func defaultFallbackModels() []aistudio.Model {
 		{
 			ID:               "models/imagen-3.0-generate-002",
 			Name:             "Imagen 3",
-			Description:      "Google AI Studio Imagen 3 image generation",
+			Description:      "Google Imagen 3 API 兼容端点，底层路由至 Gemini 3.1 Flash Image 生图引擎",
 			Methods:          []string{"predict"},
 			InputTokenLimit:  480,
 			OutputTokenLimit: 4,
@@ -485,7 +491,7 @@ func defaultFallbackModels() []aistudio.Model {
 		{
 			ID:               "models/gemini-embedding-001",
 			Name:             "Gemini Embedding 001",
-			Description:      "Google AI Studio text embedding model",
+			Description:      "Google 文本向量嵌入端点，供 RAG 知识库与向量检索计算文本特征使用",
 			Methods:          []string{"embedContent", "batchEmbedContents"},
 			InputTokenLimit:  8192,
 			OutputTokenLimit: 3072,
@@ -726,4 +732,58 @@ func matchModelWildcard(pattern, value string) bool {
 		value = value[idx+len(seg):]
 	}
 	return true
+}
+
+func cleanAIStudioDisplayName(id, rawName string) string {
+	cleanID := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(id), "models/"))
+	switch cleanID {
+	case "gemini-3.1-flash-image":
+		return "Gemini 3.1 Flash Image"
+	case "gemini-3-pro-image":
+		return "Gemini 3 Pro Image"
+	case "gemini-3.1-flash-lite-image":
+		return "Gemini 3.1 Flash Lite Image"
+	case "gemini-nano-banana-2.1":
+		return "Gemini Nano Banana 2.1"
+	case "gemini-2.5-flash-image":
+		return "Gemini 2.5 Flash Image"
+	case "gemini-2.5-flash-image-preview":
+		return "Gemini 2.5 Flash Image Preview"
+	case "imagen-3.0-generate-002":
+		return "Imagen 3"
+	default:
+		name := strings.TrimSpace(rawName)
+		if name != "" {
+			return name
+		}
+		return id
+	}
+}
+
+func cleanAIStudioDescription(id, rawDesc string) string {
+	cleanID := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(id), "models/"))
+	switch cleanID {
+	case "imagen-3.0-generate-002":
+		return "Google Imagen 3 API 兼容端点，底层路由至 Gemini 3.1 Flash Image 生图引擎"
+	case "gemini-embedding-001":
+		return "Google 文本向量嵌入端点，供 RAG 知识库与向量检索计算文本特征使用"
+	case "gemini-3.1-flash-image":
+		return "Google AI Studio 新一代主力多模态生图引擎 (原内部代号 Nano Banana 2)"
+	case "gemini-3-pro-image":
+		return "Google AI Studio 旗舰级高质量多模态生图引擎 (原内部代号 Nano Banana Pro)"
+	case "gemini-3.1-flash-lite-image":
+		return "Google AI Studio 极速轻量多模态生图引擎 (原内部代号 Nano Banana 2 Lite)"
+	case "gemini-nano-banana-2.1":
+		return "Google AI Studio 多轮角色与风格一致性多模态生图引擎 (原内部代号 Nano Banana 2.1)"
+	case "gemini-2.5-flash-image":
+		return "Google AI Studio 第一代基线多模态生图引擎 (原内部代号 Nano Banana)"
+	case "gemini-2.5-flash-image-preview":
+		return "Google AI Studio 早期预览版多模态生图引擎"
+	default:
+		desc := strings.TrimSpace(rawDesc)
+		if desc != "" {
+			return desc
+		}
+		return "Google AI Studio model " + cleanID
+	}
 }
