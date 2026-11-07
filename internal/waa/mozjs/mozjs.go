@@ -105,6 +105,7 @@ type Options struct {
 
 // Context 是绑定到创建它的 OS 线程的 JSContext，只能在该线程上使用
 type Context struct {
+	mu      sync.Mutex
 	c       *C.mz_context
 	id      uintptr
 	natives []NativeFunc
@@ -134,9 +135,13 @@ func NewContext(options Options) (*Context, error) {
 	if err := Init(); err != nil {
 		return nil, err
 	}
-	quota := int(C.mz_thread_stack_size()) - stackSlack
-	if quota < 512<<10 {
-		quota = 512 << 10
+	stackSize := int(C.mz_thread_stack_size())
+	quota := 512 << 10
+	if stackSize > 0 {
+		quota = stackSize - stackSlack
+		if quota < stackSize/2 {
+			quota = stackSize / 2
+		}
 	}
 	id := nextID.Add(1)
 	locale := C.CString(options.Locale)
@@ -164,12 +169,17 @@ func Now() float64 { return float64(C.mz_now()) }
 
 // Close 销毁上下文
 func (cx *Context) Close() {
+	cx.mu.Lock()
 	if cx.closed {
+		cx.mu.Unlock()
 		return
 	}
 	cx.closed = true
+	handle := cx.c
+	cx.c = nil
+	cx.mu.Unlock()
 	contexts.Delete(cx.id)
-	C.mz_context_free(cx.c)
+	C.mz_context_free(handle)
 }
 
 // takeError 取出失败调用留下的异常
@@ -378,7 +388,13 @@ func (cx *Context) SetThrowLocation(filename string, line, column int) {
 }
 
 // Interrupt 请求终止正在执行的脚本，可在任意 goroutine 调用
-func (cx *Context) Interrupt() { C.mz_request_interrupt(cx.c) }
+func (cx *Context) Interrupt() {
+	cx.mu.Lock()
+	defer cx.mu.Unlock()
+	if !cx.closed && cx.c != nil {
+		C.mz_request_interrupt(cx.c)
+	}
+}
 
 // GC 执行一次完整 GC，保留 JIT 代码
 func (cx *Context) GC() { C.mz_gc(cx.c, false) }

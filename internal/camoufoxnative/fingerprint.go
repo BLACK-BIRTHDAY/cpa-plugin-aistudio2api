@@ -13,7 +13,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-
+	"time"
+	"unicode"
 	"github.com/brainplusplus/go-browserforge/fingerprints"
 	bfheaders "github.com/brainplusplus/go-browserforge/headers"
 )
@@ -52,6 +53,7 @@ func PersistAccountFingerprint(sourceDirectory string, targetDirectory string) e
 // buildCamoufoxConfig 生成与实际 Camoufox 版本一致的 Windows Firefox 指纹
 func buildCamoufoxConfig(ffVersion int, locale string, timezone string) (map[string]any, error) {
 	locale = normalizeLocale(locale)
+	timezone = normalizeTimezone(timezone)
 	locales := localeValues(locale)
 	fingerprint, err := fingerprints.Generate(fingerprints.Options{
 		Screen: &fingerprints.Screen{
@@ -138,10 +140,7 @@ func buildCamoufoxConfig(ffVersion int, locale string, timezone string) (map[str
 // loadAccountCamoufoxConfig 按账户复用非敏感 Camoufox 指纹
 func loadAccountCamoufoxConfig(storageStatePath string, ffVersion int, locale string, timezone string) (map[string]any, error) {
 	locale = normalizeLocale(locale)
-	timezone = strings.TrimSpace(timezone)
-	if timezone == "" {
-		timezone = "UTC"
-	}
+	timezone = normalizeTimezone(timezone)
 	path := filepath.Join(filepath.Dir(storageStatePath), "camoufox-fingerprint.json")
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -175,7 +174,9 @@ func loadAccountCamoufoxConfig(storageStatePath string, ffVersion int, locale st
 		saved.FirefoxVersion = ffVersion
 		changed = true
 	}
-	if saved.Locale != locale || saved.Timezone != timezone {
+	savedLocale, _ := saved.Config["navigator.language"].(string)
+	savedTimezone, _ := saved.Config["timezone"].(string)
+	if saved.Locale != locale || saved.Timezone != timezone || savedLocale != locale || savedTimezone != timezone {
 		applyLocaleTimezone(saved.Config, locale, timezone)
 		saved.Locale = locale
 		saved.Timezone = timezone
@@ -198,12 +199,45 @@ func loadAccountCamoufoxConfig(storageStatePath string, ffVersion int, locale st
 	return saved.Config, nil
 }
 
+func stripFormatAndControl(value string) string {
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf) {
+			return -1
+		}
+		return r
+	}, value))
+}
+
+func normalizeTimezone(timezone string) string {
+	timezone = stripFormatAndControl(timezone)
+	if timezone == "" {
+		return "UTC"
+	}
+	if _, err := time.LoadLocation(timezone); err != nil {
+		return "UTC"
+	}
+	return timezone
+}
+
 func normalizeLocale(locale string) string {
-	locale = strings.TrimSpace(locale)
+	locale = stripFormatAndControl(strings.ReplaceAll(locale, "_", "-"))
+	if idx := strings.IndexAny(locale, ".;@ "); idx >= 0 {
+		locale = locale[:idx]
+	}
 	if locale == "" {
 		return "en-US"
 	}
-	return locale
+	language, region, found := strings.Cut(locale, "-")
+	if !found || len(language) < 2 || len(language) > 3 {
+		return "en-US"
+	}
+	if idx := strings.IndexByte(region, '-'); idx >= 0 {
+		region = region[:idx]
+	}
+	if len(region) < 2 || len(region) > 3 {
+		return "en-US"
+	}
+	return strings.ToLower(language) + "-" + strings.ToUpper(region)
 }
 
 func localeValues(locale string) []string {

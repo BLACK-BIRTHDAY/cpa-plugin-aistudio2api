@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
-
+	"unicode"
 	"github.com/Mag1cFall/AIStudio2API/internal/waa/mozjs"
 )
 
@@ -98,23 +98,31 @@ func newRuntime(ctx context.Context, options Options, prelude string) (*Runtime,
 	if sourceName == "" {
 		sourceName = "https://www.google.com/js/bg/" + options.Challenge.InterpreterHash + ".js"
 	}
-	zone := options.Profile.TimeZone
+	zone := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf) {
+			return -1
+		}
+		return r
+	}, options.Profile.TimeZone)
+	zone = strings.TrimSpace(zone)
 	if zone == "" {
 		zone = "UTC"
 	}
 	location, err := time.LoadLocation(zone)
 	if err != nil {
-		return nil, err
+		location = time.UTC
 	}
+	camou := camouLocale(options.Profile.Locale)
+	options.Profile.Locale = camou[2]
+	options.Profile.TimeZone = location.String()
 	loop := newEventLoop()
 	runtime := &Runtime{loop: loop, results: make(map[float64]func(string))}
 	ready := make(chan error, 1)
 	var readyOnce sync.Once
 	complete := func(err error) { readyOnce.Do(func() { ready <- err }) }
 	if !loop.post(func() {
-		camou := camouLocale(options.Profile.Locale)
 		mozjs.SetCamouLocale(camou[0], camou[1], camou[2])
-		cx, err := mozjs.NewContext(mozjs.Options{HeapBytes: 1 << 30, Locale: options.Profile.Locale})
+		cx, err := mozjs.NewContext(mozjs.Options{HeapBytes: 1 << 30, Locale: camou[2]})
 		if err != nil {
 			complete(err)
 			return
@@ -147,6 +155,14 @@ func newRuntime(ctx context.Context, options Options, prelude string) (*Runtime,
 		return runtime, nil
 	case <-ctx.Done():
 		loop.close()
+		select {
+		case <-loop.exited:
+		case <-time.After(time.Second):
+			if runtime.agent != nil && runtime.agent.cx != nil {
+				runtime.agent.cx.Interrupt()
+			}
+			<-loop.exited
+		}
 		return nil, ctx.Err()
 	}
 }
@@ -502,9 +518,10 @@ func (runtime *Runtime) Close() {
 		select {
 		case <-runtime.loop.exited:
 		case <-time.After(time.Second):
-			if runtime.agent != nil {
+			if runtime.agent != nil && runtime.agent.cx != nil {
 				runtime.agent.cx.Interrupt()
 			}
+			<-runtime.loop.exited
 		}
 		pendingDone := make(chan struct{})
 		go func() {

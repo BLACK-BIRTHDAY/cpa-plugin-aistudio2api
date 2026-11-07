@@ -47,6 +47,9 @@
 extern "C" __declspec(dllimport) void WINAPI GetCurrentThreadStackLimits(PULONG_PTR low, PULONG_PTR high);
 #else
 #  include <pthread.h>
+#  ifdef __APPLE__
+#    include <sys/mman.h>
+#  endif
 #endif
 
 extern "C" bool mzGoNative(uintptr_t id, int32_t native, mz_call* call);
@@ -579,7 +582,58 @@ static bool ContentSecurityPolicyAllows(JSContext* cx, JS::RuntimeCode kind, JS:
 // SecurityCallbacks 是 Trusted Types 与 CSP 的引擎回调
 static const JSSecurityCallbacks SecurityCallbacks = {ContentSecurityPolicyAllows, CodeForEvalGets, nullptr};
 
-extern "C" const char* mz_init(void) { return JS_InitWithFailureDiagnostic(); }
+#ifdef __APPLE__
+static bool canUseJit() {
+  void* page = mmap(nullptr, 16384, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
+  if (page == MAP_FAILED) {
+    return false;
+  }
+  bool usable = true;
+#  ifdef __aarch64__
+  uint8_t aprr = *(volatile const uint8_t*)0xfffffc10cULL;
+  if (aprr == 2 || aprr == 3) {
+    uint64_t rw = *(volatile const uint64_t*)0xfffffc110ULL;
+    uint64_t rx = *(volatile const uint64_t*)0xfffffc118ULL;
+    uint64_t after = 0;
+    __asm__ volatile(
+        "msr S3_6_C15_C1_5, %1\n"
+        "isb\n"
+        "mrs %0, S3_6_C15_C1_5\n"
+        "msr S3_6_C15_C1_5, %2\n"
+        "isb\n"
+        : "=r"(after)
+        : "r"(rw), "r"(rx)
+        : "memory");
+    usable = (after == rw);
+  } else if (aprr == 1) {
+    uint64_t rw = *(volatile const uint64_t*)0xfffffc110ULL;
+    uint64_t rx = *(volatile const uint64_t*)0xfffffc118ULL;
+    uint64_t after = 0;
+    __asm__ volatile(
+        "msr S3_4_C15_C2_7, %1\n"
+        "isb\n"
+        "mrs %0, S3_4_C15_C2_7\n"
+        "msr S3_4_C15_C2_7, %2\n"
+        "isb\n"
+        : "=r"(after)
+        : "r"(rw), "r"(rx)
+        : "memory");
+    usable = (after == rw);
+  }
+#  endif
+  munmap(page, 16384);
+  return usable;
+}
+#endif
+
+extern "C" const char* mz_init(void) {
+#ifdef __APPLE__
+  if (!canUseJit()) {
+    JS::DisableJitBackend();
+  }
+#endif
+  return JS_InitWithFailureDiagnostic();
+}
 
 extern "C" mz_context* mz_context_new(uintptr_t id, uint32_t heap_bytes, size_t stack_quota, const char* locale) {
   JSContext* cx = JS_NewContext(heap_bytes ? heap_bytes : JS::DefaultHeapMaxBytes);
@@ -607,8 +661,9 @@ extern "C" mz_context* mz_context_new(uintptr_t id, uint32_t heap_bytes, size_t 
   JS_SetSecurityCallbacks(cx, &SecurityCallbacks);
   JS::ContextOptionsRef(cx).setAsyncStackCaptureDebuggeeOnly(true);
   JS_SetGCParameter(cx, JSGC_MAX_NURSERY_BYTES, 4 * 1024 * 1024);
-  if (locale && *locale) {
-    JS_SetDefaultLocale(JS_GetRuntime(cx), locale);
+  if (!locale || !*locale || !JS_SetDefaultLocale(JS_GetRuntime(cx), locale)) {
+    mozjs_set_camou_locale("en", "US", "en-US");
+    JS_SetDefaultLocale(JS_GetRuntime(cx), "en-US");
   }
   return mz;
 }

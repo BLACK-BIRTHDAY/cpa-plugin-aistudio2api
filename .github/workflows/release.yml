@@ -9,7 +9,7 @@ on:
       tag:
         description: "Release tag (e.g. v1.0.1)"
         required: true
-        default: "v1.1.5"
+        default: "v1.1.6"
 
 permissions:
   contents: write
@@ -102,7 +102,7 @@ jobs:
           export CGO_CPPFLAGS="-I${PWD}/spidermonkey/include -I${PWD}/libwebp/include"
           export CGO_LDFLAGS="-L${PWD}/spidermonkey/lib -L${PWD}/libwebp/lib"
           go vet ./...
-          go test ./internal/aistudio ./internal/api ./internal/config ./internal/cpa ./internal/imagecodec/... ./internal/proxydial ./internal/resample
+          go test ./internal/aistudio ./internal/api ./internal/config ./internal/cpa ./internal/imagecodec/... ./internal/proxydial ./internal/resample ./internal/waa
 
       - name: Build Dynamic Library & Package Zip
         shell: bash

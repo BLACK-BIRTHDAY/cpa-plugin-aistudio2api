@@ -41,7 +41,7 @@ test: spidermonkey
 		CGO_CPPFLAGS="-I$(SPIDERMONKEY_DIR)/include -I$(LIBWEBP_DIR)/include" \
 		CGO_LDFLAGS="-L$(SPIDERMONKEY_DIR)/lib -L$(LIBWEBP_DIR)/lib" && \
 	go vet ./... && \
-	go test ./internal/aistudio ./internal/api ./internal/config ./internal/cpa ./internal/imagecodec/... ./internal/proxydial ./internal/resample
+	go test ./internal/aistudio ./internal/api ./internal/config ./internal/cpa ./internal/imagecodec/... ./internal/proxydial ./internal/resample ./internal/waa
 
 install: build
 	cp -f $(OUT_FILE) "/Users/jianli/Library/Application Support/com.cpa.gui/cpa-core/plugins/darwin/arm64/aistudio2api.dylib"
