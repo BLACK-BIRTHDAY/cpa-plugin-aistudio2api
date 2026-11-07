@@ -100,7 +100,7 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 	hasPrefixed := false
 	hasUnprefixed := false
 	for _, m := range modelResp.Models {
-		if m.ID == "gemini-2.5-pro" {
+		if m.ID == "gemini-3.1-pro-preview" {
 			hasUnprefixed = true
 		}
 		if strings.HasPrefix(m.ID, "aistudio/") {
@@ -108,26 +108,26 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 		}
 	}
 	if !hasUnprefixed || hasPrefixed {
-		t.Fatalf("expected unprefixed gemini-2.5-pro without duplicate aistudio/* prefix in catalog")
+		t.Fatalf("expected unprefixed gemini-3.1-pro-preview without duplicate aistudio/* prefix in catalog")
 	}
 
 	routeReq, _ := json.Marshal(pluginapi.ModelRouteRequest{
-		RequestedModel: "aistudio/gemini-2.5-pro",
-		Body:           []byte(`{"model":"aistudio/gemini-2.5-pro","messages":[{"role":"user","content":"hi"}]}`),
+		RequestedModel: "aistudio/gemini-3.1-pro-preview",
+		Body:           []byte(`{"model":"aistudio/gemini-3.1-pro-preview","messages":[{"role":"user","content":"hi"}]}`),
 	})
 	routeRes, err := p.HandleMethod(pluginabi.MethodModelRoute, routeReq)
 	if err != nil {
 		t.Fatalf("model.route failed: %v", err)
 	}
 	rResp := routeRes.(pluginapi.ModelRouteResponse)
-	if !rResp.Handled || rResp.TargetKind != pluginapi.ModelRouteTargetSelf || rResp.TargetModel != "gemini-2.5-pro" {
+	if !rResp.Handled || rResp.TargetKind != pluginapi.ModelRouteTargetSelf || rResp.TargetModel != "gemini-3.1-pro-preview" {
 		t.Fatalf("unexpected model.route response: %+v", rResp)
 	}
 
 	// 4. scheduler.pick
 	schedReq, _ := json.Marshal(pluginapi.SchedulerPickRequest{
 		Provider: "aistudio2api",
-		Model:    "gemini-2.5-pro",
+		Model:    "gemini-3.1-pro-preview",
 		Candidates: []pluginapi.SchedulerAuthCandidate{
 			{
 				ID:         "aistudio2api-user@example.com.json",
@@ -419,7 +419,7 @@ func TestExcludedModelsAndAliasPreservation(t *testing.T) {
 		_, _ = p.HandleMethod(pluginabi.MethodPluginShutdown, nil)
 	}()
 
-	cfgYAML := []byte("data_dir: " + tmpDir + "\nwaa_backend: spidermonkey\nauto_start: false\nsync_auth_files: true\nmodel_mapping: my-custom-pro=gemini-2.5-pro\n")
+	cfgYAML := []byte("data_dir: " + tmpDir + "\nwaa_backend: spidermonkey\nauto_start: false\nsync_auth_files: true\nmodel_mapping: my-custom-pro=gemini-3.1-pro-preview\n")
 	regReq, _ := json.Marshal(map[string]any{
 		"config_yaml":    cfgYAML,
 		"schema_version": pluginabi.SchemaVersion,
@@ -441,8 +441,8 @@ func TestExcludedModelsAndAliasPreservation(t *testing.T) {
 		"priority": 10,
 		"weight": 5,
 		"note": "work account",
-		"excluded_models": ["gemini-2.5-flash*"],
-		"model_aliases": {"fast": "gemini-2.5-pro"}
+		"excluded_models": ["gemini-3.8-flash*"],
+		"model_aliases": {"fast": "gemini-3.1-pro-preview"}
 	}`)
 	parseReq, _ := json.Marshal(pluginapi.AuthParseRequest{
 		Provider: "aistudio2api",
@@ -473,20 +473,20 @@ func TestExcludedModelsAndAliasPreservation(t *testing.T) {
 		t.Fatalf("model.route alias failed: %v", err)
 	}
 	aliasRoute := routeAliasRes.(pluginapi.ModelRouteResponse)
-	if !aliasRoute.Handled || aliasRoute.TargetModel != "gemini-2.5-pro" {
-		t.Fatalf("expected my-custom-pro routed to gemini-2.5-pro, got %+v", aliasRoute)
+	if !aliasRoute.Handled || aliasRoute.TargetModel != "gemini-3.1-pro-preview" {
+		t.Fatalf("expected my-custom-pro routed to gemini-3.1-pro-preview, got %+v", aliasRoute)
 	}
 
 	// Excluded model on account should not be hijacked by model.route
 	routeExclReq, _ := json.Marshal(pluginapi.ModelRouteRequest{
-		RequestedModel: "gemini-2.5-flash",
+		RequestedModel: "gemini-3.8-flash",
 	})
 	routeExclRes, err := p.HandleMethod(pluginabi.MethodModelRoute, routeExclReq)
 	if err != nil {
 		t.Fatalf("model.route excluded failed: %v", err)
 	}
 	if routeExclRes.(pluginapi.ModelRouteResponse).Handled {
-		t.Fatalf("expected Handled=false for excluded model gemini-2.5-flash")
+		t.Fatalf("expected Handled=false for excluded model gemini-3.8-flash")
 	}
 
 	// Re-register/reconfigure with existing account in runtime must not deadlock
