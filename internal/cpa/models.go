@@ -256,14 +256,6 @@ func (p *Plugin) collectCatalogModelsForAccount(accountID string) []pluginapi.Mo
 		}
 	}
 
-	// Always ensure standard compatibility models (such as imagen-3.0-generate-002 and gemini-embedding-001)
-	// from defaultFallbackModels are available for accounts so host and clients get a consistent, complete catalog.
-	for _, m := range defaultFallbackModels() {
-		info := convertAIStudioModel(m)
-		if info.ID != "" {
-			addModel(info)
-		}
-	}
 	p.mu.RLock()
 	mappingStr := p.appCfg.ModelMapping
 	p.mu.RUnlock()
@@ -302,7 +294,13 @@ func (p *Plugin) collectRawCatalogModels(accountID string) []aistudio.Model {
 	if err == nil {
 		if accountID != "" {
 			if acc, ok := rt.Pool().AccountByID(accountID); ok && acc != nil && len(acc.Models) > 0 {
-				return acc.Models
+				models := acc.Models
+				if rt.Pool().BuildEnabled() {
+					if cached := rt.CachedModels(); len(cached) > 0 {
+						models = mergeRawModels(models, cached)
+					}
+				}
+				return models
 			}
 		}
 		if models, err := rt.Admin.CatalogModels(p.ctx); err == nil && len(models) > 0 {
@@ -320,7 +318,7 @@ func convertAIStudioModel(m aistudio.Model) pluginapi.ModelInfo {
 	if id == "" {
 		return pluginapi.ModelInfo{}
 	}
-	displayName := cleanAIStudioDisplayName(id, m.Name)
+	displayName := resolveAIStudioDisplayName(m, id)
 	inLimit := m.InputTokenLimit
 	if inLimit <= 0 {
 		inLimit = 1048576
@@ -398,9 +396,9 @@ func defaultFallbackModels() []aistudio.Model {
 
 	return []aistudio.Model{
 		{
-			ID:               "models/gemini-2.5-pro",
-			Name:             "Gemini 2.5 Pro",
-			Description:      "Google AI Studio Gemini 2.5 Pro with thinking & multimodal reasoning",
+			ID:               "models/gemini-4-argon",
+			Name:             "Gemini 4 Argon",
+			Description:      "Google AI Studio Gemini 4 Argon next-generation model",
 			Methods:          []string{"generateContent", "streamGenerateContent", "countTokens"},
 			InputTokenLimit:  1048576,
 			OutputTokenLimit: 65536,
@@ -409,9 +407,9 @@ func defaultFallbackModels() []aistudio.Model {
 			Capabilities:     map[string]bool{"thinking": true, "search": true, "code_execution": true, "url_context": true, "function_calling": true, "structured_outputs": true},
 		},
 		{
-			ID:               "models/gemini-2.5-flash",
-			Name:             "Gemini 2.5 Flash",
-			Description:      "Google AI Studio Gemini 2.5 Flash hybrid reasoning model",
+			ID:               "models/gemini-3.8-flash",
+			Name:             "Gemini 3.8 Flash",
+			Description:      "Google AI Studio Gemini 3.8 Flash hybrid reasoning model",
 			Methods:          []string{"generateContent", "streamGenerateContent", "countTokens"},
 			InputTokenLimit:  1048576,
 			OutputTokenLimit: 65536,
@@ -420,9 +418,9 @@ func defaultFallbackModels() []aistudio.Model {
 			Capabilities:     map[string]bool{"thinking": true, "search": true, "code_execution": true, "url_context": true, "function_calling": true, "structured_outputs": true},
 		},
 		{
-			ID:               "models/gemini-2.5-flash-lite",
-			Name:             "Gemini 2.5 Flash-Lite",
-			Description:      "Google AI Studio Gemini 2.5 Flash-Lite high-efficiency model",
+			ID:               "models/gemini-3.6-flash",
+			Name:             "Gemini 3.6 Flash",
+			Description:      "Google AI Studio Gemini 3.6 Flash efficient model",
 			Methods:          []string{"generateContent", "streamGenerateContent", "countTokens"},
 			InputTokenLimit:  1048576,
 			OutputTokenLimit: 65536,
@@ -431,9 +429,9 @@ func defaultFallbackModels() []aistudio.Model {
 			Capabilities:     map[string]bool{"thinking": true, "search": true, "code_execution": true, "url_context": true, "function_calling": true, "structured_outputs": true},
 		},
 		{
-			ID:               "models/gemini-3-pro-preview",
-			Name:             "Gemini 3 Pro Preview",
-			Description:      "Google AI Studio Gemini 3 Pro Preview",
+			ID:               "models/gemini-3.1-pro-preview",
+			Name:             "Gemini 3.1 Pro Preview",
+			Description:      "Google AI Studio Gemini 3.1 Pro Preview with thinking & multimodal reasoning",
 			Methods:          []string{"generateContent", "streamGenerateContent", "countTokens"},
 			InputTokenLimit:  1048576,
 			OutputTokenLimit: 65536,
@@ -442,19 +440,8 @@ func defaultFallbackModels() []aistudio.Model {
 			Capabilities:     map[string]bool{"thinking": true, "search": true, "code_execution": true, "url_context": true, "function_calling": true, "structured_outputs": true},
 		},
 		{
-			ID:               "models/gemini-3-flash-preview",
-			Name:             "Gemini 3 Flash Preview",
-			Description:      "Google AI Studio Gemini 3 Flash Preview",
-			Methods:          []string{"generateContent", "streamGenerateContent", "countTokens"},
-			InputTokenLimit:  1048576,
-			OutputTokenLimit: 65536,
-			ThinkingLevels:   []string{"minimal", "low", "medium", "high"},
-			ThinkingBudget:   &aistudio.ThinkingBudget{Min: &minBudget, Max: &maxBudgetFlash, CanDisable: &canDisableTrue},
-			Capabilities:     map[string]bool{"thinking": true, "search": true, "code_execution": true, "url_context": true, "function_calling": true, "structured_outputs": true},
-		},
-		{
-			ID:               "models/gemini-2.5-flash-image-preview",
-			Name:             "Gemini 2.5 Flash Image Preview",
+			ID:               "models/gemini-2.5-flash-image",
+			Name:             "Gemini 2.5 Flash Image",
 			Description:      "Google AI Studio native multimodal image generation & editing",
 			Methods:          []string{"generateContent", "streamGenerateContent", "countTokens"},
 			InputTokenLimit:  32768,
@@ -462,36 +449,18 @@ func defaultFallbackModels() []aistudio.Model {
 			Capabilities:     map[string]bool{"image_generation": true},
 		},
 		{
-			ID:               "models/gemini-2.5-pro-preview-tts",
-			Name:             "Gemini 2.5 Pro Preview TTS",
-			Description:      "Google AI Studio Gemini 2.5 Pro Text-to-Speech",
+			ID:               "models/gemini-3.8-flash-tts",
+			Name:             "Gemini 3.8 Flash TTS",
+			Description:      "Google AI Studio Gemini 3.8 Flash Text-to-Speech",
 			Methods:          []string{"generateContent"},
 			InputTokenLimit:  8192,
 			OutputTokenLimit: 16384,
 			Capabilities:     map[string]bool{"tts": true},
-		},
-		{
-			ID:               "models/gemini-2.5-flash-preview-tts",
-			Name:             "Gemini 2.5 Flash Preview TTS",
-			Description:      "Google AI Studio Gemini 2.5 Flash Text-to-Speech",
-			Methods:          []string{"generateContent"},
-			InputTokenLimit:  8192,
-			OutputTokenLimit: 16384,
-			Capabilities:     map[string]bool{"tts": true},
-		},
-		{
-			ID:               "models/imagen-3.0-generate-002",
-			Name:             "Imagen 3",
-			Description:      "Google Imagen 3 API 兼容端点，底层路由至 Gemini 3.1 Flash Image 生图引擎",
-			Methods:          []string{"predict"},
-			InputTokenLimit:  480,
-			OutputTokenLimit: 4,
-			Capabilities:     map[string]bool{"image_generation": true},
 		},
 		{
 			ID:               "models/gemini-embedding-001",
 			Name:             "Gemini Embedding 001",
-			Description:      "Google 文本向量嵌入端点，供 RAG 知识库与向量检索计算文本特征使用",
+			Description:      "Google AI Studio text embedding model",
 			Methods:          []string{"embedContent", "batchEmbedContents"},
 			InputTokenLimit:  8192,
 			OutputTokenLimit: 3072,
@@ -734,6 +703,16 @@ func matchModelWildcard(pattern, value string) bool {
 	return true
 }
 
+func resolveAIStudioDisplayName(m aistudio.Model, id string) string {
+	if m.Details != nil {
+		alias := strings.TrimSpace(m.Details.Alias)
+		if alias != "" && !strings.HasPrefix(strings.ToLower(alias), "points to ") {
+			return alias
+		}
+	}
+	return cleanAIStudioDisplayName(id, m.Name)
+}
+
 func cleanAIStudioDisplayName(id, rawName string) string {
 	cleanID := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(id), "models/"))
 	switch cleanID {
@@ -749,8 +728,6 @@ func cleanAIStudioDisplayName(id, rawName string) string {
 		return "Gemini 2.5 Flash Image"
 	case "gemini-2.5-flash-image-preview":
 		return "Gemini 2.5 Flash Image Preview"
-	case "imagen-3.0-generate-002":
-		return "Imagen 3"
 	default:
 		name := strings.TrimSpace(rawName)
 		if name != "" {
@@ -763,8 +740,6 @@ func cleanAIStudioDisplayName(id, rawName string) string {
 func cleanAIStudioDescription(id, rawDesc string) string {
 	cleanID := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(id), "models/"))
 	switch cleanID {
-	case "imagen-3.0-generate-002":
-		return "Google Imagen 3 API 兼容端点，底层路由至 Gemini 3.1 Flash Image 生图引擎"
 	case "gemini-embedding-001":
 		return "Google 文本向量嵌入端点，供 RAG 知识库与向量检索计算文本特征使用"
 	case "gemini-3.1-flash-image":
@@ -786,4 +761,30 @@ func cleanAIStudioDescription(id, rawDesc string) string {
 		}
 		return "Google AI Studio model " + cleanID
 	}
+}
+
+func mergeRawModels(primary, secondary []aistudio.Model) []aistudio.Model {
+	seen := make(map[string]struct{}, len(primary)+len(secondary))
+	out := make([]aistudio.Model, 0, len(primary)+len(secondary))
+	for _, m := range primary {
+		id := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(m.ID), "models/"))
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; !ok {
+			seen[id] = struct{}{}
+			out = append(out, m)
+		}
+	}
+	for _, m := range secondary {
+		id := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(m.ID), "models/"))
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; !ok {
+			seen[id] = struct{}{}
+			out = append(out, m)
+		}
+	}
+	return out
 }
