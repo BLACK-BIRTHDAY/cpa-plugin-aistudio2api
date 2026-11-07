@@ -59,11 +59,11 @@ Open the CLIProxyAPI Management Center (or EasyCLIProxyAPI desktop app), navigat
 
 ### Option 2: Download Prebuilt Binary from GitHub Releases
 1. Download the archive for your platform from [Releases](https://github.com/jianli9158/cpa-plugin-aistudio2api/releases):
-   - macOS Apple Silicon: `aistudio2api_1.1.5_darwin_arm64.zip`
-   - macOS Intel: `aistudio2api_1.1.5_darwin_amd64.zip`
-   - Linux x86_64: `aistudio2api_1.1.5_linux_amd64.zip`
-   - Linux ARM64: `aistudio2api_1.1.5_linux_arm64.zip`
-   - Windows x86_64: `aistudio2api_1.1.5_windows_amd64.zip`
+   - macOS Apple Silicon: `aistudio2api_1.1.7_darwin_arm64.zip`
+   - macOS Intel: `aistudio2api_1.1.7_darwin_amd64.zip`
+   - Linux x86_64: `aistudio2api_1.1.7_linux_amd64.zip`
+   - Linux ARM64: `aistudio2api_1.1.7_linux_arm64.zip`
+   - Windows x86_64: `aistudio2api_1.1.7_windows_amd64.zip`
 2. Extract the dynamic library (`aistudio2api.dylib` / `aistudio2api.so` / `aistudio2api.dll`) into CLIProxyAPI's plugin directory:
    ```text
    plugins/<goos>/<goarch>/aistudio2api.{dylib,so,dll}
@@ -105,9 +105,10 @@ plugins:
       warm_workers: 2
       max_active_workers: 5
       per_account_concurrency: 2
-      model_prefix: "aistudio/"
       route_unprefixed_models: true
       sync_auth_files: true
+      fake_stream: false
+      model_aliases: ""
 ```
 
 | Field | Type | Default | Description |
@@ -118,13 +119,55 @@ plugins:
 | `warm_workers` | `int` | `2` | Number of pre-warmed WAA workers |
 | `max_active_workers` | `int` | `5` | Maximum concurrent active WAA workers |
 | `per_account_concurrency` | `int` | `2` | Maximum concurrent generation requests per Google account |
-| `model_prefix` | `string` | `"aistudio/"` | Model prefix routed to AIStudio2API (e.g. `aistudio/gemini-3.8-flash`) |
-| `route_unprefixed_models` | `bool` | `true` | Route unprefixed AI Studio models (`gemini-3.8-flash`, `gemini-3.8-flash-build`, etc.) |
-| `sync_auth_files` | `bool` | `true` | Automatically sync/remove 1-to-1 `aistudio2api-<email>.json` files in `~/.cli-proxy-api/` |
-| `upstream_channels` | `[]string` | `["playground", "build"]` | Enabled upstream channels (`playground`, `build`) |
-| `first_token_timeout_sec` | `int` | `20` | First-token timeout in seconds for streaming requests |
-| `first_token_hedging` | `string` | `"auto"` | First-token backup request hedging policy (`auto` enables for `gemini-4-argon`, `on` for all, `off` disabled) |
+| `route_unprefixed_models` | `bool` | `true` | Route unprefixed AI Studio models (`gemini-3.8-flash`, `gemini-4-argon`, etc.) while honoring per-account and global `excluded_models` |
+| `sync_auth_files` | `bool` | `true` | Automatically sync/remove 1-to-1 `aistudio2api-<email>.json` files in `~/.cli-proxy-api/` while preserving host-managed fields (`excluded_models`, `model_aliases`, `prefix`, `priority`, `weight`, etc.) |
+| `fake_stream` | `bool` | `false` | Collect full response upstream via non-streaming RPC before streaming events to the client |
+| `model_aliases` | `string` | `""` | Comma-separated model aliases in `alias:target` or `alias=target` format (e.g. `my-argon:gemini-4-argon,my-flash:gemini-3.8-flash-preview`) |
+| `upstream_channels` | `[]string` | `["playground"]` | Enabled upstream channels (defaults to `["playground"]`; set to `["playground", "build"]` to also enable Build channel) |
+| `first_event_hedge` | `string` | `"gemini-4-argon"` | First-event timeout backup request hedging policy (enabled for `gemini-4-argon` by default, `off` to disable) |
 
+---
+
+## Excluded Models & Model Aliases
+
+### 1. Excluded Models (`excluded-models`)
+The plugin uses `ExecutorModelScopeOAuth` so published models are strictly bound to enabled account credentials and respect both per-credential and global exclusions:
+- **Option A (Per-Credential GUI)**: In EasyCLIProxyAPI **Credentials**, edit an `aistudio2api` credential and add model names or wildcards (e.g. `gemini-2.5-flash*`, `*tts*`) under **Excluded Models**.
+- **Option B (Global `config.yaml`)**:
+  ```yaml
+  oauth:
+    excluded-models:
+      aistudio2api:
+        - "gemini-2.5-flash-preview-tts"
+        - "imagen-*"
+  ```
+
+### 2. Model Aliases (`model_aliases` / `model-alias`)
+> **Note**: EasyCLIProxyAPI's **Advanced Features -> Model Aliases** UI currently hardcodes its OAuth channel selector to 9 built-in channels on the client side and does not list third-party plugin catalogs directly. You can configure `aistudio2api` model aliases using any of the **3 methods** below—configured aliases are registered in `/v1/models` and appear in EasyCLIProxyAPI's **Agent Configuration** model selector:
+
+- **Option A (Recommended: Plugin `model_aliases` setting)**:  
+  Set `model_aliases` in **Plugins -> AIStudio2API -> Settings** (or under `plugins.configs.aistudio2api.model_aliases` in `config.yaml`) using comma-separated `alias:target` (or `alias=target`) pairs:
+  ```yaml
+  plugins:
+    configs:
+      aistudio2api:
+        model_aliases: "my-argon:gemini-4-argon,my-flash:gemini-3.8-flash-preview"
+  ```
+- **Option B (Global `oauth.model-alias` in `config.yaml`)**:
+  ```yaml
+  oauth:
+    model-alias:
+      aistudio2api:
+        - name: "gemini-4-argon"
+          alias: "my-argon"
+          fork: true
+  ```
+- **Option C (Per-Credential JSON `~/.cli-proxy-api/aistudio2api-<email>.json`)**:
+  ```json
+  "model_aliases": {
+    "my-argon": "gemini-4-argon"
+  }
+  ```
 ---
 
 ## Account Login & Import Guide

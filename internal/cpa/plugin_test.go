@@ -17,6 +17,7 @@ import (
 
 func TestPluginLifecycleAndCapabilities(t *testing.T) {
 	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
 	var hostCalls []string
 	p := cpa.NewPlugin(func(method string, payload []byte) ([]byte, error) {
 		hostCalls = append(hostCalls, method)
@@ -29,7 +30,7 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 		_, _ = p.HandleMethod(pluginabi.MethodPluginShutdown, nil)
 	}()
 
-	cfgYAML := []byte("data_dir: " + tmpDir + "\nwaa_backend: spidermonkey\nauto_start: false\n")
+	cfgYAML := []byte("data_dir: " + tmpDir + "\nwaa_backend: spidermonkey\nauto_start: false\nsync_auth_files: false\n")
 	regReq, _ := json.Marshal(map[string]any{
 		"config_yaml":    cfgYAML,
 		"schema_version": pluginabi.SchemaVersion,
@@ -402,5 +403,95 @@ func TestDefaultUpstreamChannelsAndStreamedCallUnaryFallback(t *testing.T) {
 	uiResp := uiRes.(pluginapi.ManagementResponse)
 	if uiResp.StatusCode != http.StatusOK || !strings.Contains(string(uiResp.Body), "进程锁冲突 (多端共用)") {
 		t.Fatalf("unexpected webui response status=%d len=%d", uiResp.StatusCode, len(uiResp.Body))
+	}
+}
+
+func TestExcludedModelsAndAliasPreservation(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	_ = os.MkdirAll(filepath.Join(tmpDir, ".cli-proxy-api"), 0o700)
+	accDir := filepath.Join(tmpDir, "accounts", "test@example.com")
+	_ = os.MkdirAll(accDir, 0o700)
+	_ = os.WriteFile(filepath.Join(accDir, "account.json"), []byte(`{"label":"test@example.com","enabled":true,"locale":"en-US","timezone":"Asia/Tokyo"}`), 0o600)
+	_ = os.WriteFile(filepath.Join(accDir, "storage-state.json"), []byte(`{"cookies":[{"name":"SAPISID","value":"123","domain":".google.com","path":"/","expires":-1},{"name":"__Secure-1PSID","value":"456","domain":".google.com","path":"/","expires":-1}]}`), 0o600)
+	p := cpa.NewPlugin(nil)
+	defer func() {
+		_, _ = p.HandleMethod(pluginabi.MethodPluginShutdown, nil)
+	}()
+
+	cfgYAML := []byte("data_dir: " + tmpDir + "\nwaa_backend: spidermonkey\nauto_start: false\nsync_auth_files: true\nmodel_mapping: my-custom-pro=gemini-2.5-pro\n")
+	regReq, _ := json.Marshal(map[string]any{
+		"config_yaml":    cfgYAML,
+		"schema_version": pluginabi.SchemaVersion,
+	})
+	regRes, err := p.HandleMethod(pluginabi.MethodPluginRegister, regReq)
+	if err != nil {
+		t.Fatalf("plugin.register failed: %v", err)
+	}
+	regJSON, _ := json.Marshal(regRes)
+	if !strings.Contains(string(regJSON), `"executor_model_scope":"oauth"`) {
+		t.Fatalf("expected executor_model_scope=oauth, got %s", string(regJSON))
+	}
+
+	rawCred := []byte(`{
+		"type": "aistudio2api",
+		"account_id": "test@example.com",
+		"tier": "Pro",
+		"prefix": "ais",
+		"priority": 10,
+		"weight": 5,
+		"note": "work account",
+		"excluded_models": ["gemini-2.5-flash*"],
+		"model_aliases": {"fast": "gemini-2.5-pro"}
+	}`)
+	parseReq, _ := json.Marshal(pluginapi.AuthParseRequest{
+		Provider: "aistudio2api",
+		FileName: "aistudio2api-test@example.com.json",
+		RawJSON:  rawCred,
+	})
+	parseRes, err := p.HandleMethod(pluginabi.MethodAuthParse, parseReq)
+	if err != nil {
+		t.Fatalf("auth.parse failed: %v", err)
+	}
+	parsed := parseRes.(pluginapi.AuthParseResponse)
+	if !parsed.Handled || parsed.Auth.Prefix != "ais" {
+		t.Fatalf("expected Handled=true and Prefix=ais, got %+v", parsed)
+	}
+	if parsed.Auth.Metadata["note"] != "work account" {
+		t.Fatalf("expected Metadata[note] preserved, got %#v", parsed.Auth.Metadata)
+	}
+	if !strings.Contains(string(parsed.Auth.StorageJSON), `"excluded_models"`) || !strings.Contains(string(parsed.Auth.StorageJSON), `"model_aliases"`) {
+		t.Fatalf("expected StorageJSON to preserve excluded_models and model_aliases, got %s", string(parsed.Auth.StorageJSON))
+	}
+
+	// Mapped alias should appear in catalog and route to target model
+	routeAliasReq, _ := json.Marshal(pluginapi.ModelRouteRequest{
+		RequestedModel: "my-custom-pro",
+	})
+	routeAliasRes, err := p.HandleMethod(pluginabi.MethodModelRoute, routeAliasReq)
+	if err != nil {
+		t.Fatalf("model.route alias failed: %v", err)
+	}
+	aliasRoute := routeAliasRes.(pluginapi.ModelRouteResponse)
+	if !aliasRoute.Handled || aliasRoute.TargetModel != "gemini-2.5-pro" {
+		t.Fatalf("expected my-custom-pro routed to gemini-2.5-pro, got %+v", aliasRoute)
+	}
+
+	// Excluded model on account should not be hijacked by model.route
+	routeExclReq, _ := json.Marshal(pluginapi.ModelRouteRequest{
+		RequestedModel: "gemini-2.5-flash",
+	})
+	routeExclRes, err := p.HandleMethod(pluginabi.MethodModelRoute, routeExclReq)
+	if err != nil {
+		t.Fatalf("model.route excluded failed: %v", err)
+	}
+	if routeExclRes.(pluginapi.ModelRouteResponse).Handled {
+		t.Fatalf("expected Handled=false for excluded model gemini-2.5-flash")
+	}
+
+	// Re-register/reconfigure with existing account in runtime must not deadlock
+	reconfRes, err := p.HandleMethod(pluginabi.MethodPluginReconfigure, regReq)
+	if err != nil || reconfRes == nil {
+		t.Fatalf("plugin.reconfigure with existing account failed: %v", err)
 	}
 }

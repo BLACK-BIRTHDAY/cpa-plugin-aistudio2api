@@ -59,11 +59,11 @@ flowchart LR
 
 ### 方式二：从 GitHub Releases 下载预编译包
 1. 前往 [Releases](https://github.com/jianli9158/cpa-plugin-aistudio2api/releases) 下载对应平台的压缩包：
-   - macOS Apple Silicon: `aistudio2api_1.1.5_darwin_arm64.zip`
-   - macOS Intel: `aistudio2api_1.1.5_darwin_amd64.zip`
-   - Linux x86_64: `aistudio2api_1.1.5_linux_amd64.zip`
-   - Linux ARM64: `aistudio2api_1.1.5_linux_arm64.zip`
-   - Windows x86_64: `aistudio2api_1.1.5_windows_amd64.zip`
+   - macOS Apple Silicon: `aistudio2api_1.1.7_darwin_arm64.zip`
+   - macOS Intel: `aistudio2api_1.1.7_darwin_amd64.zip`
+   - Linux x86_64: `aistudio2api_1.1.7_linux_amd64.zip`
+   - Linux ARM64: `aistudio2api_1.1.7_linux_arm64.zip`
+   - Windows x86_64: `aistudio2api_1.1.7_windows_amd64.zip`
 2. 解压出动态库文件（`aistudio2api.dylib` / `aistudio2api.so` / `aistudio2api.dll`），放入 CLIProxyAPI 的插件目录：
    ```text
    plugins/<goos>/<goarch>/aistudio2api.{dylib,so,dll}
@@ -105,9 +105,10 @@ plugins:
       warm_workers: 2
       max_active_workers: 5
       per_account_concurrency: 2
-      model_prefix: "aistudio/"
       route_unprefixed_models: true
       sync_auth_files: true
+      fake_stream: false
+      model_aliases: ""
 ```
 
 | 配置项 | 类型 | 默认值 | 说明 |
@@ -118,13 +119,55 @@ plugins:
 | `warm_workers` | `int` | `2` | 常驻预热的 WAA Worker 数量 |
 | `max_active_workers` | `int` | `5` | 最大活跃 WAA Worker 数量 |
 | `per_account_concurrency` | `int` | `2` | 单 Google 账号最大并发生成请求数 |
-| `model_prefix` | `string` | `"aistudio/"` | 模型路由前缀（如 `aistudio/gemini-3.8-flash`） |
-| `route_unprefixed_models` | `bool` | `true` | 是否直接路由无前缀 AI Studio 模型（如 `gemini-3.8-flash`、`gemini-3.8-flash-build`） |
-| `sync_auth_files` | `bool` | `true` | 导入/删除账号时自动在 `~/.cli-proxy-api/` 下 1 对 1 同步/清理 `aistudio2api-<email>.json` |
-| `upstream_channels` | `[]string` | `["playground", "build"]` | 启用的上游通道（`playground`、`build`） |
-| `first_token_timeout_sec` | `int` | `20` | 流式首字超时秒数 |
-| `first_token_hedging` | `string` | `"auto"` | 首字超时备用并发请求策略（`auto` 默认对 `gemini-4-argon` 开启，`on` 全局开启，`off` 关闭） |
+| `route_unprefixed_models` | `bool` | `true` | 是否直接路由无前缀 AI Studio 模型（如 `gemini-3.8-flash`、`gemini-4-argon`）；自动遵守单账号与全局 `excluded_models` |
+| `sync_auth_files` | `bool` | `true` | 导入/删除账号时自动在 `~/.cli-proxy-api/` 下 1 对 1 同步/清理 `aistudio2api-<email>.json`（完整保留宿主写入的 `excluded_models`、`model_aliases`、`prefix`、`priority`、`weight` 等字段） |
+| `fake_stream` | `bool` | `false` | 伪流式开关：开启后向上游使用非流式完整收集响应后再向客户端流式下发事件 |
+| `model_aliases` | `string` | `""` | 插件级模型别名映射，逗号分隔 `别名:原模型ID` 或 `别名=原模型ID`（如 `my-argon:gemini-4-argon,my-flash:gemini-3.8-flash-preview`） |
+| `upstream_channels` | `[]string` | `["playground"]` | 启用的上游通道（默认 `["playground"]`，如需开启 Build 通道可设为 `["playground", "build"]`） |
+| `first_event_hedge` | `string` | `"gemini-4-argon"` | 首包超时并发备用请求策略（默认对 `gemini-4-argon` 开启，`off` 关闭） |
 
+---
+
+## 模型排除与模型别名配置
+
+### 1. 排除模型 (`excluded-models`)
+插件采用 `ExecutorModelScopeOAuth` 作用域，100% 绑定启用状态的账户凭证并完整保留宿主凭证扩展字段：
+- **方式 A（单账号排除，GUI 直接生效）**：在 EasyCLIProxyAPI **「凭证管理」** 中找到 `aistudio2api` 账号 -> 点击 **「编辑」** -> 在 **「排除模型」** 中填入模型名或通配符（如 `gemini-2.5-flash*`、`*tts*`）并保存。
+- **方式 B（`config.yaml` 全局通道排除）**：
+  ```yaml
+  oauth:
+    excluded-models:
+      aistudio2api:
+        - "gemini-2.5-flash-preview-tts"
+        - "imagen-*"
+  ```
+
+### 2. 模型别名 (`model_aliases` / `model-alias`)
+> **说明**：EasyCLIProxyAPI 桌面端的「高级功能 -> 模型别名」界面目前在客户端侧将 OAuth 通道下拉列表硬编码为 9 个内置通道，暂不直接列出第三方插件的模型列表。可通过以下 **3 种方式**配置 `aistudio2api` 模型别名，配置后的别名会自动注册进 `/v1/models` 并在 EasyCLIProxyAPI **「智能体配置」** 模型列表中正常显示：
+
+- **方式 A（推荐：在插件配置 `model_aliases` 中直接填写）**：  
+  在 EasyCLIProxyAPI **「插件管理 -> AIStudio2API -> 配置」** 的 `model_aliases` 字段（或 `config.yaml` 的 `plugins.configs.aistudio2api.model_aliases`）中填写逗号分隔的 `别名:原模型ID`（或 `别名=原模型ID`）：
+  ```yaml
+  plugins:
+    configs:
+      aistudio2api:
+        model_aliases: "my-argon:gemini-4-argon,my-flash:gemini-3.8-flash-preview"
+  ```
+- **方式 B（在 `config.yaml` 的 `oauth.model-alias` 中配置）**：
+  ```yaml
+  oauth:
+    model-alias:
+      aistudio2api:
+        - name: "gemini-4-argon"
+          alias: "my-argon"
+          fork: true
+  ```
+- **方式 C（在单账号凭证 `~/.cli-proxy-api/aistudio2api-<email>.json` 中配置）**：
+  ```json
+  "model_aliases": {
+    "my-argon": "gemini-4-argon"
+  }
+  ```
 ---
 
 ## 账号登录与导入指南

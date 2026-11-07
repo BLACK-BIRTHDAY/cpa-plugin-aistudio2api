@@ -3,6 +3,7 @@
 package cpa_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +21,14 @@ func TestDynamicLibraryDLOpenABI(t *testing.T) {
 		t.Skipf("dylib not built at %s: %v", dylibPath, err)
 	}
 
-	got, err := cpa.CallSharedLibraryABI(dylibPath, "plugin.register", `{"schema_version":10}`)
+	tmpDir := t.TempDir()
+	cfgYAML := []byte("data_dir: " + tmpDir + "\nauto_start: false\nsync_auth_files: false\n")
+	payloadBytes, _ := json.Marshal(map[string]any{
+		"schema_version": 10,
+		"config_yaml":    cfgYAML,
+	})
+	got, err := cpa.CallSharedLibraryABI(dylibPath, "plugin.register", string(payloadBytes))
+	_, _ = cpa.CallSharedLibraryABI(dylibPath, "plugin.shutdown", `{}`)
 	if err != nil {
 		t.Fatalf("CallSharedLibraryABI failed: %v", err)
 	}

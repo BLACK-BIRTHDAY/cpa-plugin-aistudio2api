@@ -229,25 +229,8 @@ func (p *Plugin) parseAndSyncAuthPayload(ctx context.Context, fileName string, r
 	if payload.UpdatedAt == "" {
 		payload.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	}
-	storageBytes, err := json.Marshal(payload)
-	if err != nil {
-		storageBytes = rawJSON
-	}
-
-	metadata := map[string]any{
-		"type":       ProviderID,
-		"provider":   ProviderID,
-		"account_id": accountID,
-		"email":      accountID,
-		"label":      label,
-		"disabled":   disabled,
-	}
-	if payload.Tier != "" {
-		metadata["tier"] = payload.Tier
-	}
-	if payload.State != "" {
-		metadata["state"] = payload.State
-	}
+	storageBytes, metadata, prefix, proxyURL := mergeAuthPayloadAndMetadata(payload, nil, nil, rawJSON)
+	p.setAccountExcludedModels(accountID, extractExcludedModelsList(metadata, nil))
 
 	attributes := map[string]string{
 		"provider":   ProviderID,
@@ -262,14 +245,15 @@ func (p *Plugin) parseAndSyncAuthPayload(ctx context.Context, fileName string, r
 		Provider:         ProviderID,
 		FileName:         fileName,
 		Label:            label,
+		Prefix:           prefix,
 		Disabled:         disabled,
-		ProxyURL:         strings.TrimSpace(payload.Proxy),
+		ProxyURL:         proxyURL,
 		StorageJSON:      storageBytes,
 		Metadata:         metadata,
 		Attributes:       attributes,
 		NextRefreshAfter: time.Now().Add(30 * time.Minute),
 	}
-	if fileName != "" && (prevDisabled == nil || *prevDisabled != disabled || prevServiceStopped != serviceStopped) {
+	if boolOrDefault(p.Config().SyncAuthFiles, true) && fileName != "" && len(readExistingHostAuthFile(fileName)) > 0 && (prevDisabled == nil || *prevDisabled != disabled || prevServiceStopped != serviceStopped) {
 		_ = writeAuthDataToDefaultHostDir(authData)
 	}
 	return authData, nil
@@ -564,7 +548,7 @@ func (p *Plugin) handleAuthRefresh(raw []byte) (any, error) {
 	accounts, _ := rt.Admin.Accounts(p.ctx)
 	for _, acc := range accounts {
 		if strings.EqualFold(acc.ID, accountID) {
-			authData, err := p.buildAuthDataForAccount(rt, acc)
+			authData, err := p.buildAuthDataForAccountWithExisting(rt, acc, req.StorageJSON, req.Metadata, req.Attributes)
 			if err == nil {
 				if req.AuthID != "" {
 					authData.ID = req.AuthID
@@ -604,6 +588,16 @@ func sameCoreAuthCookies(a, b aistudio.StorageState) bool {
 }
 
 func (p *Plugin) buildAuthDataForAccount(rt *app.PluginRuntime, acc api.AdminAccount) (pluginapi.AuthData, error) {
+	return p.buildAuthDataForAccountWithExisting(rt, acc, nil, nil, nil)
+}
+
+func (p *Plugin) buildAuthDataForAccountWithExisting(
+	rt *app.PluginRuntime,
+	acc api.AdminAccount,
+	existingJSON []byte,
+	existingMeta map[string]any,
+	existingAttrs map[string]string,
+) (pluginapi.AuthData, error) {
 	accountID := strings.ToLower(strings.TrimSpace(acc.ID))
 	fileName := fmt.Sprintf("aistudio2api-%s.json", sanitizeFileComponent(accountID))
 	serviceStopped := p.serviceStopped.Load()
@@ -635,9 +629,29 @@ func (p *Plugin) buildAuthDataForAccount(rt *app.PluginRuntime, acc api.AdminAcc
 		}
 	}
 
-	storageBytes, err := json.Marshal(payload)
-	if err != nil {
-		return pluginapi.AuthData{}, err
+	var diskBytes []byte
+	if boolOrDefault(p.Config().SyncAuthFiles, true) {
+		diskBytes = readExistingHostAuthFile(fileName)
+	}
+	storageBytes, metadata, prefix, proxyURL := mergeAuthPayloadAndMetadata(payload, existingMeta, existingAttrs, diskBytes, existingJSON)
+	if len(storageBytes) == 0 {
+		var err error
+		storageBytes, err = json.Marshal(payload)
+		if err != nil {
+			return pluginapi.AuthData{}, err
+		}
+	}
+	p.setAccountExcludedModels(accountID, extractExcludedModelsList(metadata, existingAttrs))
+
+	attributes := map[string]string{
+		"provider":   ProviderID,
+		"account_id": accountID,
+		"tier":       string(acc.BenefitTier),
+	}
+	for k, v := range existingAttrs {
+		if _, exists := attributes[k]; !exists && strings.TrimSpace(v) != "" {
+			attributes[k] = v
+		}
 	}
 
 	return pluginapi.AuthData{
@@ -645,26 +659,116 @@ func (p *Plugin) buildAuthDataForAccount(rt *app.PluginRuntime, acc api.AdminAcc
 		Provider:         ProviderID,
 		FileName:         fileName,
 		Label:            acc.Label,
+		Prefix:           prefix,
 		Disabled:         disabled,
-		ProxyURL:         acc.Proxy,
+		ProxyURL:         proxyURL,
 		StorageJSON:      storageBytes,
 		NextRefreshAfter: time.Now().Add(30 * time.Minute),
-		Metadata: map[string]any{
-			"type":       ProviderID,
-			"provider":   ProviderID,
-			"account_id": accountID,
-			"email":      accountID,
-			"label":      acc.Label,
-			"tier":       string(acc.BenefitTier),
-			"state":      string(acc.State),
-			"disabled":   disabled,
-		},
-		Attributes: map[string]string{
-			"provider":   ProviderID,
-			"account_id": accountID,
-			"tier":       string(acc.BenefitTier),
-		},
+		Metadata:         metadata,
+		Attributes:       attributes,
 	}, nil
+}
+
+func readExistingHostAuthFile(fileName string) []byte {
+	if strings.TrimSpace(fileName) == "" {
+		return nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return nil
+	}
+	target := filepath.Join(home, ".cli-proxy-api", filepath.Base(fileName))
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
+func mergeAuthPayloadAndMetadata(
+	payload AuthFilePayload,
+	existingMeta map[string]any,
+	existingAttrs map[string]string,
+	rawSources ...[]byte,
+) ([]byte, map[string]any, string, string) {
+	merged := make(map[string]any)
+	for _, src := range rawSources {
+		if len(src) == 0 {
+			continue
+		}
+		var m map[string]any
+		if json.Unmarshal(src, &m) == nil {
+			for k, v := range m {
+				merged[k] = v
+			}
+		}
+	}
+	for k, v := range existingMeta {
+		merged[k] = v
+	}
+
+	baseBytes, err := json.Marshal(payload)
+	if err == nil {
+		var baseMap map[string]any
+		if json.Unmarshal(baseBytes, &baseMap) == nil {
+			for k, v := range baseMap {
+				merged[k] = v
+			}
+		}
+	}
+	if payload.Disabled != nil {
+		merged["disabled"] = *payload.Disabled
+	}
+	if payload.ServiceStopped {
+		merged["service_stopped"] = true
+	} else {
+		delete(merged, "service_stopped")
+	}
+
+	prefix, _ := merged["prefix"].(string)
+	prefix = strings.Trim(strings.TrimSpace(prefix), "/")
+
+	proxyURL := strings.TrimSpace(payload.Proxy)
+	if proxyURL == "" {
+		if p, ok := merged["proxy_url"].(string); ok && strings.TrimSpace(p) != "" {
+			proxyURL = strings.TrimSpace(p)
+		} else if p, ok := merged["proxy-url"].(string); ok && strings.TrimSpace(p) != "" {
+			proxyURL = strings.TrimSpace(p)
+		}
+	}
+
+	if _, hasExcl := merged["excluded_models"]; !hasExcl {
+		if _, hasDash := merged["excluded-models"]; !hasDash && existingAttrs != nil {
+			if attrExcl := strings.TrimSpace(existingAttrs["excluded_models"]); attrExcl != "" {
+				parts := strings.Split(attrExcl, ",")
+				cleaned := make([]string, 0, len(parts))
+				for _, part := range parts {
+					if s := strings.TrimSpace(part); s != "" {
+						cleaned = append(cleaned, s)
+					}
+				}
+				if len(cleaned) > 0 {
+					merged["excluded_models"] = cleaned
+				}
+			}
+		}
+	}
+
+	storageBytes, err := json.Marshal(merged)
+	if err != nil {
+		storageBytes = baseBytes
+	}
+
+	metadata := make(map[string]any, len(merged))
+	for k, v := range merged {
+		switch k {
+		case "storage_state", "cookies", "cookie_header":
+			continue
+		default:
+			metadata[k] = v
+		}
+	}
+	return storageBytes, metadata, prefix, proxyURL
 }
 
 func (p *Plugin) SyncAccountToHostAuth(callbackID string, acc api.AdminAccount) error {
@@ -728,9 +832,15 @@ func (p *Plugin) setHostAuthFilesDisabled(rt *app.PluginRuntime, forceDisabled b
 	if rt != nil {
 		if accounts, err := rt.Admin.Accounts(p.ctx); err == nil {
 			for _, acc := range accounts {
-				enabledByAccount[strings.ToLower(strings.TrimSpace(acc.ID))] = acc.Enabled
-				if authData, bErr := p.buildAuthDataForAccount(rt, acc); bErr == nil {
-					_ = writeAuthDataToDefaultHostDir(authData)
+				accKey := strings.ToLower(strings.TrimSpace(acc.ID))
+				enabledByAccount[accKey] = acc.Enabled
+				if !forceDisabled {
+					fileName := fmt.Sprintf("aistudio2api-%s.json", sanitizeFileComponent(accKey))
+					if len(readExistingHostAuthFile(fileName)) == 0 {
+						if authData, bErr := p.buildAuthDataForAccount(rt, acc); bErr == nil {
+							_ = writeAuthDataToDefaultHostDir(authData)
+						}
+					}
 				}
 			}
 		}

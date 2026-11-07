@@ -25,11 +25,14 @@ type Plugin struct {
 	appCfg       config.Config
 	runtime      *app.PluginRuntime
 	hostCall     HostCallFunc
-	loginStateMu sync.Mutex
-	loginStates  map[string]*loginSessionState
-	chromeLogin    sync.Mutex
-	serviceStopped atomic.Bool
-	lastRegisterNs atomic.Int64
+	loginStateMu    sync.Mutex
+	loginStates     map[string]*loginSessionState
+	excludedMu      sync.RWMutex
+	accountExcluded map[string][]string
+	hostExcluded    map[string][]string
+	chromeLogin     sync.Mutex
+	serviceStopped  atomic.Bool
+	lastRegisterNs  atomic.Int64
 }
 
 type loginSessionState struct {
@@ -44,10 +47,11 @@ type loginSessionState struct {
 func NewPlugin(hostCall HostCallFunc) *Plugin {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Plugin{
-		ctx:         ctx,
-		cancel:      cancel,
-		hostCall:    hostCall,
-		loginStates: make(map[string]*loginSessionState),
+		ctx:             ctx,
+		cancel:          cancel,
+		hostCall:        hostCall,
+		loginStates:     make(map[string]*loginSessionState),
+		accountExcluded: make(map[string][]string),
 	}
 }
 
@@ -258,6 +262,12 @@ func (p *Plugin) handleRegister(raw []byte) (any, error) {
 					Default:     false,
 					Description: "Fake streaming: collect full response upstream before streaming events to client",
 				},
+				{
+					Name:        "model_aliases",
+					Type:        pluginapi.ConfigFieldTypeString,
+					Default:     "",
+					Description: "Comma-separated model aliases (e.g. my-pro:gemini-2.5-pro,my-flash:gemini-3.8-flash-preview)",
+				},
 			},
 		},
 		Capabilities: rpcCapabilities{
@@ -266,7 +276,7 @@ func (p *Plugin) handleRegister(raw []byte) (any, error) {
 			Scheduler:          true,
 			ModelRouter:        true,
 			Executor:           true,
-			ExecutorModelScope: pluginapi.ExecutorModelScopeBoth,
+			ExecutorModelScope: pluginapi.ExecutorModelScopeOAuth,
 			ExecutorInputFormats: []string{
 				"chat-completions",
 				"responses",
@@ -297,23 +307,21 @@ func (p *Plugin) applyConfig(configYAML []byte) error {
 		return err
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.pluginCfg = pcfg
 	p.appCfg = cfg
 	p.lastRegisterNs.Store(time.Now().UnixNano())
 	p.serviceStopped.Store(false)
-	if p.runtime == nil {
-		rt, err := app.NewPluginRuntime(p.ctx, cfg)
-		if err != nil {
-			return err
+	rt := p.runtime
+	if rt == nil {
+		var rtErr error
+		rt, rtErr = app.NewPluginRuntime(p.ctx, cfg)
+		if rtErr != nil {
+			p.mu.Unlock()
+			return rtErr
 		}
 		p.runtime = rt
-		if boolOrDefault(pcfg.SyncAuthFiles, true) {
-			p.setHostAuthFilesDisabled(rt, false)
-		}
-		return nil
 	}
-	rt := p.runtime
+	p.mu.Unlock()
 	if boolOrDefault(pcfg.SyncAuthFiles, true) && rt != nil {
 		p.setHostAuthFilesDisabled(rt, false)
 	}
@@ -329,7 +337,7 @@ func (p *Plugin) handleQuiesce() (any, error) {
 	if rt != nil {
 		_, _ = rt.Admin.StopService(p.ctx)
 	}
-	if syncAuth {
+	if syncAuth && rt != nil {
 		p.setHostAuthFilesDisabled(rt, true)
 	}
 	return struct{}{}, nil
@@ -347,7 +355,11 @@ func (p *Plugin) handleShutdown() (any, error) {
 	p.loginStateMu.Lock()
 	clear(p.loginStates)
 	p.loginStateMu.Unlock()
-	if syncAuth {
+	p.excludedMu.Lock()
+	clear(p.accountExcluded)
+	clear(p.hostExcluded)
+	p.excludedMu.Unlock()
+	if syncAuth && rt != nil {
 		p.setHostAuthFilesDisabled(rt, true)
 	}
 	if rt != nil {

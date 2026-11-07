@@ -13,7 +13,7 @@ import (
 
 const (
 	PluginID      = "aistudio2api"
-	PluginVersion = "1.1.6"
+	PluginVersion = "1.1.7"
 	ProviderID    = "aistudio2api"
 )
 
@@ -30,6 +30,7 @@ type PluginConfig struct {
 	UpstreamChannels      []string `json:"upstream_channels" yaml:"upstream_channels"`
 	ModelChannels         string   `json:"model_channels" yaml:"model_channels"`
 	ModelAliases          string   `json:"model_aliases" yaml:"model_aliases"`
+	ModelMapping          string   `json:"model_mapping,omitempty" yaml:"model_mapping,omitempty"`
 	BuildNativeNonstream  *bool    `json:"build_native_nonstream" yaml:"build_native_nonstream"`
 	NonstreamKeepalive    *bool    `json:"nonstream_keepalive" yaml:"nonstream_keepalive"`
 	FakeStream             *bool  `json:"fake_stream" yaml:"fake_stream"`
@@ -98,6 +99,9 @@ func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
 			}
 			if pcfg.ModelAliases == "" {
 				pcfg.ModelAliases = opt.ModelAliases
+			}
+			if pcfg.ModelMapping == "" {
+				pcfg.ModelMapping = opt.ModelMapping
 			}
 			if pcfg.BuildNativeNonstream == nil {
 				pcfg.BuildNativeNonstream = opt.BuildNativeNonstream
@@ -224,7 +228,11 @@ func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
 	cfg.PerAccountConcurrency = perAccountConc
 	cfg.UpstreamChannels = channels
 	cfg.ModelChannels = strings.TrimSpace(pcfg.ModelChannels)
-	cfg.ModelMapping = strings.TrimSpace(pcfg.ModelAliases)
+	aliasesRaw := strings.TrimSpace(pcfg.ModelAliases)
+	if aliasesRaw == "" {
+		aliasesRaw = strings.TrimSpace(pcfg.ModelMapping)
+	}
+	cfg.ModelMapping = normalizeModelAliasesString(aliasesRaw)
 	cfg.BuildNativeNonstream = boolOrDefault(pcfg.BuildNativeNonstream, true)
 	cfg.NonstreamKeepalive = boolOrDefault(pcfg.NonstreamKeepalive, false)
 	cfg.FakeStream = boolOrDefault(pcfg.FakeStream, false)
@@ -249,4 +257,24 @@ func boolOrDefault(ptr *bool, def bool) bool {
 		return def
 	}
 	return *ptr
+}
+
+func normalizeModelAliasesString(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if !strings.Contains(part, ":") && strings.Contains(part, "=") {
+			part = strings.Replace(part, "=", ":", 1)
+		}
+		out = append(out, part)
+	}
+	return strings.Join(out, ",")
 }

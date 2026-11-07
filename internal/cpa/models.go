@@ -24,6 +24,7 @@ func (p *Plugin) handleModelStatic(raw []byte) (any, error) {
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &req)
 	}
+	p.setHostExcludedModels(req.Host.ExcludedModels)
 	models := p.collectCatalogModels()
 	return pluginapi.ModelResponse{
 		Provider: ProviderID,
@@ -36,7 +37,7 @@ func (p *Plugin) handleModelForAuth(raw []byte) (any, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
-
+	p.setHostExcludedModels(req.Host.ExcludedModels)
 	if !isAIStudioProvider(req.AuthProvider) {
 		var payload AuthFilePayload
 		if len(req.StorageJSON) > 0 {
@@ -51,22 +52,30 @@ func (p *Plugin) handleModelForAuth(raw []byte) (any, error) {
 	if len(req.StorageJSON) > 0 {
 		_ = json.Unmarshal(req.StorageJSON, &payload)
 	}
+	accID := extractAccountIDFromAuth(req.StorageJSON, req.Metadata, req.Attributes)
+	p.setAccountExcludedModels(accID, extractExcludedModelsFromReq(req.StorageJSON, req.Metadata, req.Attributes))
+
 	var authUpdate pluginapi.AuthData
 	if state, ok := extractStorageStateFromPayload(req.StorageJSON, payload); ok {
 		if rt, err := p.Runtime(); err == nil {
-			accID := extractAccountIDFromAuth(req.StorageJSON, req.Metadata, req.Attributes)
 			if acc, err := p.upsertAccountInRuntime(p.ctx, rt, accID, payload, state, false); err == nil && acc.ID != "" {
-				if updated, err := p.buildAuthDataForAccount(rt, acc); err == nil {
-					if req.AuthID != "" {
-						updated.ID = req.AuthID
+				accID = strings.ToLower(strings.TrimSpace(acc.ID))
+				p.setAccountExcludedModels(accID, extractExcludedModelsFromReq(req.StorageJSON, req.Metadata, req.Attributes))
+				curTier, _ := req.Metadata["tier"].(string)
+				curState, _ := req.Metadata["state"].(string)
+				if strings.TrimSpace(curTier) != string(acc.BenefitTier) || strings.TrimSpace(curState) != string(acc.State) {
+					if updated, err := p.buildAuthDataForAccountWithExisting(rt, acc, req.StorageJSON, req.Metadata, req.Attributes); err == nil {
+						if req.AuthID != "" {
+							updated.ID = req.AuthID
+						}
+						authUpdate = updated
 					}
-					authUpdate = updated
 				}
 			}
 		}
 	}
 
-	models := p.collectCatalogModelsForAccount(extractAccountIDFromAuth(req.StorageJSON, req.Metadata, req.Attributes))
+	models := p.collectCatalogModelsForAccount(accID)
 	return pluginapi.ModelResponse{
 		Provider:   ProviderID,
 		Models:     models,
@@ -106,25 +115,29 @@ func (p *Plugin) handleModelRoute(raw []byte) (any, error) {
 		}
 	}
 
-	// If route_unprefixed_models is explicitly enabled, or if aistudio2api has active accounts
-	// and no competing built-in gemini provider has auth, route known AI Studio models to self.
-	cfg := p.Config()
-	routeUnprefixed := boolOrDefault(cfg.RouteUnprefixedModels, true)
-	if cfg.RouteUnprefixedModels == nil && !routeUnprefixed {
-		hasBuiltinGemini := false
-		for _, prov := range req.AvailableProviders {
-			pLower := strings.ToLower(strings.TrimSpace(prov))
-			if pLower == "gemini" || pLower == "aistudio" || pLower == "vertex" {
-				hasBuiltinGemini = true
-				break
-			}
-		}
-		if !hasBuiltinGemini && p.hasReadyAccount() && p.isKnownModel(model) {
-			routeUnprefixed = true
+	if mapped := p.resolveConfiguredModelMapping(model); mapped != "" && !strings.EqualFold(mapped, model) {
+		if !p.isModelExcluded(mapped) && !p.isModelExcluded(model) {
+			return pluginapi.ModelRouteResponse{
+				Handled:     true,
+				TargetKind:  pluginapi.ModelRouteTargetSelf,
+				Target:      PluginID,
+				TargetModel: mapped,
+				Reason:      "routed mapped AI Studio model alias to aistudio2api",
+			}, nil
 		}
 	}
 
-	if routeUnprefixed && p.isKnownModel(model) {
+	// When CLIProxyAPI's GlobalModelRegistry has already resolved candidate providers
+	// for an unprefixed model (via ModelsForAuth after applying excluded_models and
+	// oauth.model-alias), let the host route natively across available providers
+	// without hijacking other providers or bypassing credential exclusions.
+	if len(req.AvailableProviders) > 0 {
+		return pluginapi.ModelRouteResponse{Handled: false}, nil
+	}
+
+	cfg := p.Config()
+	routeUnprefixed := boolOrDefault(cfg.RouteUnprefixedModels, true)
+	if routeUnprefixed && p.isKnownModel(model) && !p.isModelExcluded(model) {
 		return pluginapi.ModelRouteResponse{
 			Handled:     true,
 			TargetKind:  pluginapi.ModelRouteTargetSelf,
@@ -240,6 +253,36 @@ func (p *Plugin) collectCatalogModelsForAccount(accountID string) []pluginapi.Mo
 			searchInfo.ID = info.ID + "-search"
 			searchInfo.DisplayName = info.DisplayName + " (Search)"
 			addModel(searchInfo)
+		}
+	}
+	p.mu.RLock()
+	mappingStr := p.appCfg.ModelMapping
+	p.mu.RUnlock()
+	if mappingStr != "" {
+		if mappings, err := config.ParseModelMapping(mappingStr); err == nil {
+			byID := make(map[string]pluginapi.ModelInfo, len(out))
+			for _, item := range out {
+				byID[strings.ToLower(item.ID)] = item
+			}
+			for _, m := range mappings {
+				alias := strings.TrimSpace(m.Alias)
+				target := strings.TrimPrefix(strings.TrimSpace(m.Model), "models/")
+				if alias == "" || target == "" {
+					continue
+				}
+				if base, ok := byID[strings.ToLower(target)]; ok {
+					aliasInfo := base
+					aliasInfo.ID = alias
+					aliasInfo.Name = "models/" + alias
+					aliasInfo.DisplayName = alias + " -> " + base.DisplayName
+					addModel(aliasInfo)
+				} else {
+					addModel(convertAIStudioModel(aistudio.Model{
+						ID:   "models/" + alias,
+						Name: alias,
+					}))
+				}
+			}
 		}
 	}
 	return out
@@ -448,4 +491,239 @@ func defaultFallbackModels() []aistudio.Model {
 			OutputTokenLimit: 3072,
 		},
 	}
+}
+
+func (p *Plugin) resolveConfiguredModelMapping(modelID string) string {
+	clean := strings.TrimPrefix(strings.TrimSpace(modelID), "models/")
+	if clean == "" {
+		return ""
+	}
+	p.mu.RLock()
+	mappingStr := p.appCfg.ModelMapping
+	p.mu.RUnlock()
+	if mappingStr == "" {
+		return ""
+	}
+	mappings, err := config.ParseModelMapping(mappingStr)
+	if err != nil {
+		return ""
+	}
+	for _, item := range mappings {
+		if strings.EqualFold(strings.TrimSpace(item.Alias), clean) && strings.TrimSpace(item.Model) != "" {
+			return strings.TrimPrefix(strings.TrimSpace(item.Model), "models/")
+		}
+	}
+	return ""
+}
+
+func (p *Plugin) setAccountExcludedModels(accountID string, patterns []string) {
+	accountID = strings.ToLower(strings.TrimSpace(accountID))
+	if accountID == "" {
+		return
+	}
+	cleaned := make([]string, 0, len(patterns))
+	for _, pat := range patterns {
+		if s := strings.ToLower(strings.TrimSpace(pat)); s != "" {
+			cleaned = append(cleaned, s)
+		}
+	}
+	p.excludedMu.Lock()
+	if len(cleaned) == 0 {
+		delete(p.accountExcluded, accountID)
+	} else {
+		p.accountExcluded[accountID] = cleaned
+	}
+	p.excludedMu.Unlock()
+}
+
+func extractExcludedModelsFromReq(storageJSON []byte, metadata map[string]any, attributes map[string]string) []string {
+	if list := extractExcludedModelsList(metadata, attributes); len(list) > 0 {
+		return list
+	}
+	if len(storageJSON) > 0 {
+		var doc map[string]any
+		if json.Unmarshal(storageJSON, &doc) == nil {
+			return extractExcludedModelsList(doc, nil)
+		}
+	}
+	return nil
+}
+
+func extractExcludedModelsList(metadata map[string]any, attributes map[string]string) []string {
+	for _, key := range []string{"excluded_models", "excluded-models"} {
+		if metadata != nil {
+			if raw, ok := metadata[key]; ok && raw != nil {
+				switch v := raw.(type) {
+				case string:
+					parts := strings.Split(v, ",")
+					out := make([]string, 0, len(parts))
+					for _, part := range parts {
+						if s := strings.TrimSpace(part); s != "" {
+							out = append(out, s)
+						}
+					}
+					if len(out) > 0 {
+						return out
+					}
+				case []string:
+					out := make([]string, 0, len(v))
+					for _, item := range v {
+						if s := strings.TrimSpace(item); s != "" {
+							out = append(out, s)
+						}
+					}
+					if len(out) > 0 {
+						return out
+					}
+				case []any:
+					out := make([]string, 0, len(v))
+					for _, item := range v {
+						if str, ok := item.(string); ok && strings.TrimSpace(str) != "" {
+							out = append(out, strings.TrimSpace(str))
+						}
+					}
+					if len(out) > 0 {
+						return out
+					}
+				}
+			}
+		}
+		if attributes != nil {
+			if raw := strings.TrimSpace(attributes[key]); raw != "" {
+				parts := strings.Split(raw, ",")
+				out := make([]string, 0, len(parts))
+				for _, part := range parts {
+					if s := strings.TrimSpace(part); s != "" {
+						out = append(out, s)
+					}
+				}
+				if len(out) > 0 {
+					return out
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (p *Plugin) setHostExcludedModels(hostExcluded map[string][]string) {
+	if len(hostExcluded) == 0 {
+		return
+	}
+	cloned := make(map[string][]string, len(hostExcluded))
+	for k, v := range hostExcluded {
+		cloned[strings.ToLower(strings.TrimSpace(k))] = append([]string(nil), v...)
+	}
+	p.excludedMu.Lock()
+	p.hostExcluded = cloned
+	p.excludedMu.Unlock()
+}
+
+func (p *Plugin) isModelExcluded(modelID string) bool {
+	clean := strings.ToLower(strings.TrimPrefix(StripModelPrefix(modelID, p.Config().ModelPrefix), "models/"))
+	if clean == "" {
+		return false
+	}
+	var globalRules []string
+	p.excludedMu.RLock()
+	for _, key := range []string{ProviderID, "aistudio", "google-aistudio"} {
+		if rules, ok := p.hostExcluded[key]; ok && len(rules) > 0 {
+			globalRules = append(globalRules, rules...)
+		}
+	}
+	var allAccountRules [][]string
+	for _, rules := range p.accountExcluded {
+		if len(rules) > 0 {
+			allAccountRules = append(allAccountRules, append([]string(nil), rules...))
+		}
+	}
+	p.excludedMu.RUnlock()
+	rt, err := p.Runtime()
+	if err == nil && rt != nil {
+		accounts, aErr := rt.Admin.Accounts(p.ctx)
+		if aErr == nil && len(accounts) > 0 {
+			enabledCount := 0
+			excludedCount := 0
+			p.excludedMu.RLock()
+			for _, acc := range accounts {
+				if !acc.Enabled {
+					continue
+				}
+				enabledCount++
+				accID := strings.ToLower(strings.TrimSpace(acc.ID))
+				rules := p.accountExcluded[accID]
+				if len(rules) == 0 {
+					rules = globalRules
+				}
+				if matchesAnyModelPattern(clean, rules) {
+					excludedCount++
+				}
+			}
+			p.excludedMu.RUnlock()
+			if enabledCount > 0 {
+				return excludedCount == enabledCount
+			}
+		}
+	}
+	if len(allAccountRules) > 0 {
+		excludedCount := 0
+		for _, rules := range allAccountRules {
+			if matchesAnyModelPattern(clean, rules) {
+				excludedCount++
+			}
+		}
+		return excludedCount == len(allAccountRules)
+	}
+	return matchesAnyModelPattern(clean, globalRules)
+}
+
+func matchesAnyModelPattern(modelID string, patterns []string) bool {
+	modelID = strings.ToLower(strings.TrimSpace(modelID))
+	if modelID == "" || len(patterns) == 0 {
+		return false
+	}
+	for _, rawPat := range patterns {
+		pat := strings.ToLower(strings.TrimSpace(rawPat))
+		if pat == "" {
+			continue
+		}
+		if matchModelWildcard(pat, modelID) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchModelWildcard(pattern, value string) bool {
+	if pattern == "" {
+		return false
+	}
+	if !strings.Contains(pattern, "*") {
+		return pattern == value
+	}
+	parts := strings.Split(pattern, "*")
+	if prefix := parts[0]; prefix != "" {
+		if !strings.HasPrefix(value, prefix) {
+			return false
+		}
+		value = value[len(prefix):]
+	}
+	if suffix := parts[len(parts)-1]; suffix != "" {
+		if !strings.HasSuffix(value, suffix) {
+			return false
+		}
+		value = value[:len(value)-len(suffix)]
+	}
+	for i := 1; i < len(parts)-1; i++ {
+		seg := parts[i]
+		if seg == "" {
+			continue
+		}
+		idx := strings.Index(value, seg)
+		if idx < 0 {
+			return false
+		}
+		value = value[idx+len(seg):]
+	}
+	return true
 }
