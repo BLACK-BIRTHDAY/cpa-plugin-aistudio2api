@@ -73,7 +73,7 @@ func isAIStudioProvider(provider string) bool {
 func (p *Plugin) handleAuthIdentifier() (any, error) {
 	return rpcIdentifierResponse{
 		Identifier:          ProviderID,
-		Identifiers:         []string{"aistudio2api", "aistudio", "google-aistudio"},
+		Identifiers:         nil,
 		CredentialProviders: []string{"aistudio2api", "aistudio", "google-aistudio"},
 	}, nil
 }

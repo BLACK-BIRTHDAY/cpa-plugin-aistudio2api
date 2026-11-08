@@ -2268,6 +2268,13 @@ func (p *AccountPool) ClearCooldownIfGeneration(
 // ClearCooldown 清除账户在作用域上的冷却，作用域为全局 *、模型 ID 或 build:<模型 ID>
 func (p *AccountPool) ClearCooldown(accountID string, scope string) error {
 	_, err := p.updateRuntime(accountID, func(_ *Account, runtimeState *accountRuntimeState) (bool, func(*Account), error) {
+		if scope == "" || scope == "*" || scope == "all" {
+			if len(runtimeState.Cooldowns) == 0 {
+				return false, nil, nil
+			}
+			clear(runtimeState.Cooldowns)
+			return true, nil, nil
+		}
 		if _, exists := runtimeState.Cooldowns[scope]; !exists {
 			return false, nil, nil
 		}

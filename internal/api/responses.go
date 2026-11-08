@@ -893,6 +893,7 @@ func responsesContents(raw json.RawMessage) ([]aistudio.Content, []string, error
 	var instructions []string
 	var systemMedia []aistudio.Part
 	pendingSignature := ""
+	awaitingCalls := make(map[string]string)
 	for index, rawItem := range items {
 		var item responsesInputItem
 		switch kind := responsesItemType(rawItem); kind {
@@ -920,7 +921,11 @@ func responsesContents(raw json.RawMessage) ([]aistudio.Content, []string, error
 		if item.Namespace != "" {
 			item.Name = item.Namespace + "." + item.Name
 		}
-		call := aistudio.FunctionCall{ID: item.CallID, Name: item.Name, ThoughtSignature: pendingSignature}
+		callID := item.CallID
+		if callID == "" {
+			callID = item.ID
+		}
+		call := aistudio.FunctionCall{ID: callID, Name: item.Name, ThoughtSignature: pendingSignature}
 		switch item.Type {
 		case "", "message":
 			pendingSignature = ""
@@ -953,18 +958,36 @@ func responsesContents(raw json.RawMessage) ([]aistudio.Content, []string, error
 			continue
 		case "function_call":
 			call.Arguments = functionCallArguments(item.Arguments)
+			if call.ID != "" && call.Name != "" {
+				awaitingCalls[call.ID] = call.Name
+			}
 		case "custom_tool_call":
 			call.Arguments = customToolArguments(item.Input)
+			if call.ID != "" && call.Name != "" {
+				awaitingCalls[call.ID] = call.Name
+			}
 		case "local_shell_call":
 			call.Name, call.Arguments = "local_shell", localShellArguments(item.Action)
+			if call.ID != "" {
+				awaitingCalls[call.ID] = "local_shell"
+			}
 		case "shell_call":
 			call.Name, call.Arguments = "shell", rawObjectArguments(item.Action)
+			if call.ID != "" {
+				awaitingCalls[call.ID] = "shell"
+			}
 		case "apply_patch_call":
 			call.Name, call.Arguments = "apply_patch", rawObjectArguments(item.Operation)
+			if call.ID != "" {
+				awaitingCalls[call.ID] = "apply_patch"
+			}
 		case "computer_call":
 			call.Name, call.Arguments = "computer", rawObjectArguments(item.Action)
 			if rawJSONConfigured(item.Actions) {
 				call.Arguments, _ = json.Marshal(map[string]json.RawMessage{"actions": item.Actions})
+			}
+			if call.ID != "" {
+				awaitingCalls[call.ID] = "computer"
 			}
 		case "computer_call_output":
 			pendingSignature = ""
@@ -981,6 +1004,27 @@ func responsesContents(raw json.RawMessage) ([]aistudio.Content, []string, error
 			if item.CallID == "" {
 				item.CallID = item.ID
 			}
+			name := item.Name
+			if expectedName, ok := awaitingCalls[item.CallID]; ok {
+				if name == "" {
+					name = expectedName
+				}
+				delete(awaitingCalls, item.CallID)
+			}
+			switch item.Type {
+			case "local_shell_call_output":
+				if name == "" {
+					name = "local_shell"
+				}
+			case "shell_call_output":
+				if name == "" {
+					name = "shell"
+				}
+			case "apply_patch_call_output":
+				if name == "" {
+					name = "apply_patch"
+				}
+			}
 			if item.Type == "apply_patch_call_output" {
 				item.Output, _ = json.Marshal(map[string]any{"status": item.Status, "output": rawJSONValue(item.Output, nil)})
 			}
@@ -988,8 +1032,21 @@ func responsesContents(raw json.RawMessage) ([]aistudio.Content, []string, error
 			if err != nil {
 				return nil, nil, fmt.Errorf("%s: %w", item.Type, err)
 			}
+			if name == "" && len(awaitingCalls) == 0 {
+				text := string(output)
+				var obj map[string]any
+				if json.Unmarshal(output, &obj) == nil {
+					if r, ok := obj["result"].(string); ok && len(obj) == 1 {
+						text = r
+					} else if e, ok := obj["error"].(string); ok && len(obj) == 1 {
+						text = "Error: " + e
+					}
+				}
+				contents = append(contents, aistudio.Content{Role: aistudio.RoleUser, Parts: []aistudio.Part{{Text: text}}})
+				continue
+			}
 			contents = append(contents, aistudio.Content{Role: aistudio.RoleTool, Parts: append([]aistudio.Part{{FunctionResult: &aistudio.FunctionResult{
-				ID: item.CallID, Content: output,
+				ID: item.CallID, Name: name, Content: output,
 			}}}, media...)})
 			continue
 		case "reasoning":
