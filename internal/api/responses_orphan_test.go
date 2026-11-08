@@ -45,3 +45,25 @@ func TestResponsesContents_PairedFunctionCallWithID(t *testing.T) {
 		t.Errorf("expected functionResult.Name == 'exec_command', got: %#v", contents[2].Parts[0])
 	}
 }
+
+func TestResponsesContents_OrphanToolOutputWithPendingSiblingCall(t *testing.T) {
+	input := []byte(`[
+		{"type":"message","role":"user","content":"parallel work"},
+		{"type":"function_call","id":"call_active","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"},
+		{"type":"function_call_output","call_id":"call_orphan_other","output":"{\"result\":\"orphan result\"}"},
+		{"type":"function_call_output","call_id":"call_active","output":"{\"result\":\"ls output\"}"}
+	]`)
+	contents, _, err := responsesContents(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(contents) != 4 {
+		t.Fatalf("expected 4 contents, got %d", len(contents))
+	}
+	if contents[2].Role != "user" || len(contents[2].Parts) != 1 || !strings.Contains(contents[2].Parts[0].Text, "orphan result") {
+		t.Errorf("expected orphan output to degrade to user text part even when sibling call is pending, got: %#v", contents[2])
+	}
+	if contents[3].Role != "tool" || contents[3].Parts[0].FunctionResult == nil || contents[3].Parts[0].FunctionResult.Name != "exec_command" {
+		t.Errorf("expected active call output to pair with exec_command, got: %#v", contents[3])
+	}
+}

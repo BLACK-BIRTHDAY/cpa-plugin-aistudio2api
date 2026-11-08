@@ -55,8 +55,8 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 		t.Fatalf("auth.identifier failed: %v", err)
 	}
 	authIDJSON, _ := json.Marshal(authIDRes)
-	if !strings.Contains(string(authIDJSON), `"aistudio2api"`) {
-		t.Fatalf("unexpected auth.identifier: %s", string(authIDJSON))
+	if !strings.Contains(string(authIDJSON), `"identifiers":["aistudio2api"]`) || strings.Contains(string(authIDJSON), `"identifiers":["aistudio2api","aistudio"`) {
+		t.Fatalf("expected single primary identifier in auth.identifier, got: %s", string(authIDJSON))
 	}
 
 	// Unrelated provider should return Handled: false
@@ -185,7 +185,9 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 	if uiResp.StatusCode != http.StatusOK || !strings.Contains(string(uiResp.Body), "启动本机 Chrome 无痕登录") {
 		t.Fatalf("unexpected UI response: status=%d len=%d", uiResp.StatusCode, len(uiResp.Body))
 	}
-
+	if strings.Contains(string(uiResp.Body), "autologin") || strings.Contains(string(uiResp.Body), "URLSearchParams(window.location.search)") {
+		t.Fatalf("resource UI page must not auto-trigger actions or read credentials from URL query parameters")
+	}
 
 	resStatusReq, _ := json.Marshal(pluginapi.ManagementRequest{
 		Method: http.MethodGet,

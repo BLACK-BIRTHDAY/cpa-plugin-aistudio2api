@@ -39,7 +39,7 @@ type rpcExecutorStreamResponse struct {
 func (p *Plugin) handleExecutorIdentifier() (any, error) {
 	return rpcIdentifierResponse{
 		Identifier:          ProviderID,
-		Identifiers:         nil,
+		Identifiers:         []string{ProviderID},
 		CredentialProviders: []string{"aistudio2api", "aistudio", "google-aistudio"},
 	}, nil
 }

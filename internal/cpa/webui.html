@@ -704,14 +704,6 @@ function getKey() {
     updateKeyBadge();
     return input.value.trim();
   }
-  const params = new URLSearchParams(window.location.search);
-  const urlKey = params.get('key') || params.get('management_key') || params.get('token');
-  if (urlKey && urlKey.trim()) {
-    input.value = urlKey.trim();
-    localStorage.setItem('cpa_aistudio2api_key', urlKey.trim());
-    updateKeyBadge();
-    return urlKey.trim();
-  }
   const candidates = ['cpa_aistudio2api_key', 'management_key', 'cpa-management-key', 'secret-key', 'secretKey', 'managementKey', 'apiKey', 'token'];
   const stores = [localStorage, sessionStorage];
   try {
@@ -1343,10 +1335,6 @@ function escapeJs(s) {
 getKey();
 loadStatus();
 loadLogs();
-if (new URLSearchParams(window.location.search).get('autologin') === '1') {
-  window.history.replaceState({}, '', window.location.pathname);
-  setTimeout(() => loginWithChromeBrowser(), 300);
-}
 setInterval(() => {
   document.querySelectorAll('[data-until]').forEach(el => {
     const u = el.getAttribute('data-until');

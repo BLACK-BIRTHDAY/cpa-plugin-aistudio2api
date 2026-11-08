@@ -991,6 +991,10 @@ func responsesContents(raw json.RawMessage) ([]aistudio.Content, []string, error
 			}
 		case "computer_call_output":
 			pendingSignature = ""
+			if item.CallID == "" {
+				item.CallID = item.ID
+			}
+			delete(awaitingCalls, item.CallID)
 			screenshot, err := computerScreenshot(item.Output)
 			if err != nil {
 				return nil, nil, fmt.Errorf("computer_call_output: %w", err)
@@ -1032,7 +1036,13 @@ func responsesContents(raw json.RawMessage) ([]aistudio.Content, []string, error
 			if err != nil {
 				return nil, nil, fmt.Errorf("%s: %w", item.Type, err)
 			}
-			if name == "" && len(awaitingCalls) == 0 {
+			if name == "" && len(awaitingCalls) == 1 && item.CallID == "" {
+				for k, v := range awaitingCalls {
+					name = v
+					delete(awaitingCalls, k)
+				}
+			}
+			if name == "" {
 				text := string(output)
 				var obj map[string]any
 				if json.Unmarshal(output, &obj) == nil {
@@ -1042,7 +1052,7 @@ func responsesContents(raw json.RawMessage) ([]aistudio.Content, []string, error
 						text = "Error: " + e
 					}
 				}
-				contents = append(contents, aistudio.Content{Role: aistudio.RoleUser, Parts: []aistudio.Part{{Text: text}}})
+				contents = append(contents, aistudio.Content{Role: aistudio.RoleUser, Parts: append([]aistudio.Part{{Text: text}}, media...)})
 				continue
 			}
 			contents = append(contents, aistudio.Content{Role: aistudio.RoleTool, Parts: append([]aistudio.Part{{FunctionResult: &aistudio.FunctionResult{
