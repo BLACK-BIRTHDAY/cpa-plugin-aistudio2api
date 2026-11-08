@@ -268,6 +268,18 @@ func (p *Plugin) handleRegister(raw []byte) (any, error) {
 					Default:     "",
 					Description: "英文逗号分隔的模型别名映射（例如 my-pro:gemini-3.1-pro-preview,my-flash:gemini-3.8-flash）",
 				},
+				{
+					Name:        "account_order",
+					Type:        pluginapi.ConfigFieldTypeString,
+					Default:     "",
+					Description: "fill-first 策略下优先选用的账户顺序（英文逗号或空格分隔的账户邮箱 ID）",
+				},
+				{
+					Name:        "model_accounts",
+					Type:        pluginapi.ConfigFieldTypeString,
+					Default:     "",
+					Description: "英文逗号分隔的模型绑定账户映射（例如 gemini-3.1-pro-preview:a@gmail.com|b@gmail.com）",
+				},
 			},
 		},
 		Capabilities: rpcCapabilities{

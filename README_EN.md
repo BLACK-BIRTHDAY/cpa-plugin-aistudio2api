@@ -59,11 +59,11 @@ Open the CLIProxyAPI Management Center (or EasyCLIProxyAPI desktop app), navigat
 
 ### Option 2: Download Prebuilt Binary from GitHub Releases
 1. Download the archive for your platform from [Releases](https://github.com/jianli9158/cpa-plugin-aistudio2api/releases):
-   - macOS Apple Silicon: `aistudio2api_1.1.9_darwin_arm64.zip`
-   - macOS Intel: `aistudio2api_1.1.9_darwin_amd64.zip`
-   - Linux x86_64: `aistudio2api_1.1.9_linux_amd64.zip`
-   - Linux ARM64: `aistudio2api_1.1.9_linux_arm64.zip`
-   - Windows x86_64: `aistudio2api_1.1.9_windows_amd64.zip`
+   - macOS Apple Silicon: `aistudio2api_1.2.0_darwin_arm64.zip`
+   - macOS Intel: `aistudio2api_1.2.0_darwin_amd64.zip`
+   - Linux x86_64: `aistudio2api_1.2.0_linux_amd64.zip`
+   - Linux ARM64: `aistudio2api_1.2.0_linux_arm64.zip`
+   - Windows x86_64: `aistudio2api_1.2.0_windows_amd64.zip`
 2. Extract the dynamic library (`aistudio2api.dylib` / `aistudio2api.so` / `aistudio2api.dll`) into CLIProxyAPI's plugin directory:
    ```text
    plugins/<goos>/<goarch>/aistudio2api.{dylib,so,dll}
@@ -123,6 +123,8 @@ plugins:
 | `sync_auth_files` | `bool` | `true` | Automatically sync/remove 1-to-1 `aistudio2api-<email>.json` files in `~/.cli-proxy-api/` while preserving host-managed fields (`excluded_models`, `model_aliases`, `prefix`, `priority`, `weight`, etc.) |
 | `fake_stream` | `bool` | `false` | Collect full response upstream via non-streaming RPC before streaming events to the client |
 | `model_aliases` | `string` | `""` | Comma-separated model aliases in `alias:target` or `alias=target` format (e.g. `my-argon:gemini-4-argon,my-flash:gemini-3.8-flash-preview`) |
+| `account_order` | `string` | `""` | Priority account order under `fill-first` routing strategy (comma- or space-separated account email IDs) |
+| `model_accounts` | `string` | `""` | Comma-separated model-to-account bindings in `model:account1\|account2` format (e.g. `gemini-3.1-pro-preview:a@gmail.com\|b@gmail.com`) |
 | `upstream_channels` | `[]string` | `["playground"]` | Enabled upstream channels (defaults to `["playground"]`; set to `["playground", "build"]` to also enable Build channel) |
 | `first_event_hedge` | `string` | `"gemini-4-argon"` | First-event timeout backup request hedging policy (enabled for `gemini-4-argon` by default, `off` to disable) |
 

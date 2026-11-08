@@ -13,7 +13,7 @@ import (
 
 const (
 	PluginID      = "aistudio2api"
-	PluginVersion = "1.1.9"
+	PluginVersion = "1.2.0"
 	ProviderID    = "aistudio2api"
 )
 
@@ -28,7 +28,10 @@ type PluginConfig struct {
 	WarmStartupConc       *int     `json:"warm_startup_concurrency" yaml:"warm_startup_concurrency"`
 	PerAccountConcurrency *int     `json:"per_account_concurrency" yaml:"per_account_concurrency"`
 	UpstreamChannels      []string `json:"upstream_channels" yaml:"upstream_channels"`
+	RoutingStrategy       string   `json:"routing_strategy" yaml:"routing_strategy"`
+	AccountOrder          string   `json:"account_order" yaml:"account_order"`
 	ModelChannels         string   `json:"model_channels" yaml:"model_channels"`
+	ModelAccounts         string   `json:"model_accounts" yaml:"model_accounts"`
 	ModelAliases          string   `json:"model_aliases" yaml:"model_aliases"`
 	ModelMapping          string   `json:"model_mapping,omitempty" yaml:"model_mapping,omitempty"`
 	BuildNativeNonstream  *bool    `json:"build_native_nonstream" yaml:"build_native_nonstream"`
@@ -96,6 +99,15 @@ func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
 			}
 			if pcfg.ModelChannels == "" {
 				pcfg.ModelChannels = opt.ModelChannels
+			}
+			if pcfg.RoutingStrategy == "" {
+				pcfg.RoutingStrategy = opt.RoutingStrategy
+			}
+			if pcfg.AccountOrder == "" {
+				pcfg.AccountOrder = opt.AccountOrder
+			}
+			if pcfg.ModelAccounts == "" {
+				pcfg.ModelAccounts = opt.ModelAccounts
 			}
 			if pcfg.ModelAliases == "" {
 				pcfg.ModelAliases = opt.ModelAliases
@@ -228,6 +240,11 @@ func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
 	cfg.PerAccountConcurrency = perAccountConc
 	cfg.UpstreamChannels = channels
 	cfg.ModelChannels = strings.TrimSpace(pcfg.ModelChannels)
+	if strategy := strings.TrimSpace(pcfg.RoutingStrategy); strategy == "round-robin" || strategy == "fill-first" {
+		cfg.RoutingStrategy = strategy
+	}
+	cfg.AccountOrder = strings.TrimSpace(pcfg.AccountOrder)
+	cfg.ModelAccounts = strings.TrimSpace(pcfg.ModelAccounts)
 	aliasesRaw := strings.TrimSpace(pcfg.ModelAliases)
 	if aliasesRaw == "" {
 		aliasesRaw = strings.TrimSpace(pcfg.ModelMapping)

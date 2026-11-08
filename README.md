@@ -59,11 +59,11 @@ flowchart LR
 
 ### 方式二：从 GitHub Releases 下载预编译包
 1. 前往 [Releases](https://github.com/jianli9158/cpa-plugin-aistudio2api/releases) 下载对应平台的压缩包：
-   - macOS Apple Silicon: `aistudio2api_1.1.9_darwin_arm64.zip`
-   - macOS Intel: `aistudio2api_1.1.9_darwin_amd64.zip`
-   - Linux x86_64: `aistudio2api_1.1.9_linux_amd64.zip`
-   - Linux ARM64: `aistudio2api_1.1.9_linux_arm64.zip`
-   - Windows x86_64: `aistudio2api_1.1.9_windows_amd64.zip`
+   - macOS Apple Silicon: `aistudio2api_1.2.0_darwin_arm64.zip`
+   - macOS Intel: `aistudio2api_1.2.0_darwin_amd64.zip`
+   - Linux x86_64: `aistudio2api_1.2.0_linux_amd64.zip`
+   - Linux ARM64: `aistudio2api_1.2.0_linux_arm64.zip`
+   - Windows x86_64: `aistudio2api_1.2.0_windows_amd64.zip`
 2. 解压出动态库文件（`aistudio2api.dylib` / `aistudio2api.so` / `aistudio2api.dll`），放入 CLIProxyAPI 的插件目录：
    ```text
    plugins/<goos>/<goarch>/aistudio2api.{dylib,so,dll}
@@ -123,6 +123,8 @@ plugins:
 | `sync_auth_files` | `bool` | `true` | 导入/删除账号时自动在 `~/.cli-proxy-api/` 下 1 对 1 同步/清理 `aistudio2api-<email>.json`（完整保留宿主写入的 `excluded_models`、`model_aliases`、`prefix`、`priority`、`weight` 等字段） |
 | `fake_stream` | `bool` | `false` | 伪流式开关：开启后向上游使用非流式完整收集响应后再向客户端流式下发事件 |
 | `model_aliases` | `string` | `""` | 插件级模型别名映射，逗号分隔 `别名:原模型ID` 或 `别名=原模型ID`（如 `my-argon:gemini-4-argon,my-flash:gemini-3.8-flash-preview`） |
+| `account_order` | `string` | `""` | `fill-first` 策略下优先使用的账户顺序（逗号或空格分隔的账户邮箱 ID） |
+| `model_accounts` | `string` | `""` | 逗号分隔的模型绑定账户映射（格式 `模型ID:账户1\|账户2`，如 `gemini-3.1-pro-preview:a@gmail.com\|b@gmail.com`） |
 | `upstream_channels` | `[]string` | `["playground"]` | 启用的上游通道（默认 `["playground"]`，如需开启 Build 通道可设为 `["playground", "build"]`） |
 | `first_event_hedge` | `string` | `"gemini-4-argon"` | 首包超时并发备用请求策略（默认对 `gemini-4-argon` 开启，`off` 关闭） |
 

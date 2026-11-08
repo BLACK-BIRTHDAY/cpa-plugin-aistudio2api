@@ -42,13 +42,16 @@ var configKeys = [...]string{
 	"WARM_STARTUP_CONCURRENCY",
 	"PER_ACCOUNT_CONCURRENCY",
 	"ROUTING_STRATEGY",
+	"ACCOUNT_ORDER",
 	"UPSTREAM_CHANNELS",
 	"MODEL_MAPPING",
 	"MODEL_CHANNELS",
+	"MODEL_ACCOUNTS",
 	"WAA_BACKEND",
 	"MEDIA_OUTPUT",
 	"MEDIA_BASE_URL",
 	"AUTO_START",
+	"HIDE_DOCK_ICON",
 	"REQUEST_BODY_LOG",
 	"LOG_FILE",
 	"LOG_MAX_TOTAL_MB",
@@ -104,6 +107,7 @@ const DefaultContinuationPrompt = "Continue the assistant response after the fol
 // Config 保存服务的全局配置
 type Config struct {
 	AutoStart              bool
+	HideDockIcon           bool
 	RequestBodyLog         bool
 	LogFile                bool
 	LogMaxTotalMB          int
@@ -134,9 +138,11 @@ type Config struct {
 	WarmStartupConcurrency int
 	PerAccountConcurrency  int
 	RoutingStrategy        string
+	AccountOrder           string
 	UpstreamChannels       []string
 	ModelMapping           string
 	ModelChannels          string
+	ModelAccounts          string
 	WAABackend             string
 	MediaOutput            string
 	MediaBaseURL           string
@@ -208,6 +214,7 @@ func invalidValue(key, value string, err error) InvalidValue {
 // configSetters 把每个配置键的文本值解析到 Config
 var configSetters = map[string]func(*Config, string) error{
 	"AUTO_START":               boolSetter("AUTO_START", func(c *Config) *bool { return &c.AutoStart }),
+	"HIDE_DOCK_ICON":           boolSetter("HIDE_DOCK_ICON", func(c *Config) *bool { return &c.HideDockIcon }),
 	"REQUEST_BODY_LOG":         boolSetter("REQUEST_BODY_LOG", func(c *Config) *bool { return &c.RequestBodyLog }),
 	"LOG_FILE":                 boolSetter("LOG_FILE", func(c *Config) *bool { return &c.LogFile }),
 	"ADMIN_AUTH_ENABLED":       boolSetter("ADMIN_AUTH_ENABLED", func(c *Config) *bool { return &c.AdminAuthEnabled }),
@@ -237,8 +244,10 @@ var configSetters = map[string]func(*Config, string) error{
 	"PROXY_API_KEY":            textSetter(func(c *Config) *string { return &c.ProxyAPIKey }, strings.TrimSpace),
 	"PROXY":                    textSetter(func(c *Config) *string { return &c.Proxy }, strings.TrimSpace),
 	"ROUTING_STRATEGY":         textSetter(func(c *Config) *string { return &c.RoutingStrategy }, strings.TrimSpace),
+	"ACCOUNT_ORDER":            textSetter(func(c *Config) *string { return &c.AccountOrder }, strings.TrimSpace),
 	"MODEL_MAPPING":            textSetter(func(c *Config) *string { return &c.ModelMapping }, strings.TrimSpace),
 	"MODEL_CHANNELS":           textSetter(func(c *Config) *string { return &c.ModelChannels }, strings.TrimSpace),
+	"MODEL_ACCOUNTS":           textSetter(func(c *Config) *string { return &c.ModelAccounts }, strings.TrimSpace),
 	"API_KEY_ACCOUNTS":         textSetter(func(c *Config) *string { return &c.APIKeyAccounts }, strings.TrimSpace),
 	"WAA_BACKEND":              setWAABackend,
 	"MEDIA_OUTPUT":             textSetter(func(c *Config) *string { return &c.MediaOutput }, lowerTrim),
@@ -378,6 +387,10 @@ var configChecks = []configCheck{
 	}},
 	{[]string{"MODEL_CHANNELS"}, func(c Config) error {
 		_, err := ParseModelChannels(c.ModelChannels)
+		return err
+	}},
+	{[]string{"MODEL_ACCOUNTS"}, func(c Config) error {
+		_, err := ParseModelAccounts(c.ModelAccounts)
 		return err
 	}},
 	{[]string{"API_KEY_ACCOUNTS"}, func(c Config) error {
@@ -548,6 +561,7 @@ func (c Config) KeepEnvironment(saved Config) Config {
 func (c Config) envValues() map[string]string {
 	return map[string]string{
 		"AUTO_START":               strconv.FormatBool(c.AutoStart),
+		"HIDE_DOCK_ICON":           strconv.FormatBool(c.HideDockIcon),
 		"REQUEST_BODY_LOG":         strconv.FormatBool(c.RequestBodyLog),
 		"LOG_FILE":                 strconv.FormatBool(c.LogFile),
 		"LOG_MAX_TOTAL_MB":         strconv.Itoa(c.LogMaxTotalMB),
@@ -577,9 +591,11 @@ func (c Config) envValues() map[string]string {
 		"WARM_STARTUP_CONCURRENCY": strconv.Itoa(c.WarmStartupConcurrency),
 		"PER_ACCOUNT_CONCURRENCY":  strconv.Itoa(c.PerAccountConcurrency),
 		"ROUTING_STRATEGY":         c.RoutingStrategy,
+		"ACCOUNT_ORDER":            c.AccountOrder,
 		"UPSTREAM_CHANNELS":        strings.Join(c.UpstreamChannels, ","),
 		"MODEL_MAPPING":            c.ModelMapping,
 		"MODEL_CHANNELS":           c.ModelChannels,
+		"MODEL_ACCOUNTS":           c.ModelAccounts,
 		"API_KEY_ACCOUNTS":         c.APIKeyAccounts,
 		"WAA_BACKEND":              c.WAABackend,
 		"MEDIA_OUTPUT":             c.MediaOutput,
@@ -702,12 +718,7 @@ func ParseAPIKeyAccounts(value string, apiKeys string) (map[string][]string, err
 		}
 		index := strings.LastIndexByte(item, ':')
 		key := strings.TrimSpace(item[:max(index, 0)])
-		var ids []string
-		for id := range strings.SplitSeq(item[index+1:], "|") {
-			if id = strings.TrimSpace(id); id != "" {
-				ids = append(ids, id)
-			}
-		}
+		ids := accountIDs(item[index+1:])
 		if index < 0 || key == "" || len(ids) == 0 {
 			return nil, fmt.Errorf("API_KEY_ACCOUNTS 的每一项写成 API key:账户|账户")
 		}
@@ -720,6 +731,39 @@ func ParseAPIKeyAccounts(value string, apiKeys string) (map[string][]string, err
 		accounts[key] = ids
 	}
 	return accounts, nil
+}
+
+// ParseModelAccounts 解析逗号分隔的 模型 ID:账户|账户，以最后一个冒号分隔，返回每个模型可用的账户 ID
+func ParseModelAccounts(value string) (map[string][]string, error) {
+	accounts := make(map[string][]string)
+	for item := range strings.SplitSeq(value, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		index := strings.LastIndexByte(item, ':')
+		model := strings.TrimPrefix(strings.TrimSpace(item[:max(index, 0)]), "models/")
+		ids := accountIDs(item[index+1:])
+		if index < 0 || model == "" || len(ids) == 0 {
+			return nil, fmt.Errorf("MODEL_ACCOUNTS 的每一项写成 模型 ID:账户|账户，%q 不符合", item)
+		}
+		if _, exists := accounts[model]; exists {
+			return nil, fmt.Errorf("MODEL_ACCOUNTS 中模型 %s 重复", model)
+		}
+		accounts[model] = ids
+	}
+	return accounts, nil
+}
+
+// accountIDs 返回以 | 分隔、去掉空白的各个账户 ID
+func accountIDs(value string) []string {
+	var ids []string
+	for id := range strings.SplitSeq(value, "|") {
+		if id = strings.TrimSpace(id); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // APIKeys 返回 PROXY_API_KEY 中逗号分隔、去掉空白的各个 key

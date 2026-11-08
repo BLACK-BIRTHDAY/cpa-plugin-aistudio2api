@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/mail"
 	"os"
@@ -343,10 +344,10 @@ type AccountSelection struct {
 	PlaygroundOnly     bool
 	Channel            Channel
 	PreferredChannel   Channel
-	// IgnorePlanLimitCooldown 为 true 时套餐限额冷却中的账户照常参与选号
-	IgnorePlanLimitCooldown bool
-	anyTier                 bool
-	anyState                bool
+	// IgnoreQuotaCooldown 为 true 时套餐限额与每日限额冷却中的账户照常参与选号
+	IgnoreQuotaCooldown bool
+	anyTier             bool
+	anyState            bool
 }
 
 const preferredBootstrapModelID = "gemini-flash-latest"
@@ -395,6 +396,8 @@ type AccountPool struct {
 	channels              []Channel
 	modelChannels         map[string]Channel
 	apiKeyAccounts        map[string][]string
+	modelAccounts         map[string][]string
+	accountOrder          map[string]int
 	changed               chan struct{}
 	// sessionCheck 以官网页面的方式打开 AI Studio 检查账户会话，为空时认证失败直接标记需要重新登录
 	sessionCheck func(context.Context, *Account) error
@@ -414,12 +417,12 @@ type AccountLease struct {
 	checkedAt             time.Time
 	refreshRuntime        bool
 	channel               Channel
-	// ignorePlanLimitCooldown 表示租约按套餐限额回退取得，套餐限额冷却不阻止它发送
-	ignorePlanLimitCooldown bool
-	operation               sync.Mutex
-	released                bool
-	once                    sync.Once
-	err                     error
+	// ignoreQuotaCooldown 表示租约在全部账户冷却时取自套餐限额或每日限额冷却中的账户，这两种冷却不阻止它发送
+	ignoreQuotaCooldown bool
+	operation           sync.Mutex
+	released            bool
+	once                sync.Once
+	err                 error
 	// sessionOnce 使同一租约内的认证失败只检查一次会话
 	sessionOnce sync.Once
 	// sessionErr 是本租约会话检查的结果
@@ -1099,7 +1102,7 @@ func (p *AccountPool) AcquireAccount(ctx context.Context, accountID string) (*Ac
 
 // AcquireFor 按模型方法账户或资源粘性获取账户槽位
 func (p *AccountPool) AcquireFor(ctx context.Context, selection AccountSelection) (*AccountLease, error) {
-	selection = p.keyScopedSelection(ctx, selection)
+	selection = p.scopedSelection(ctx, selection)
 	if selection.ResourceID != "" {
 		if err := p.refreshResource(ctx, selection.ResourceID); err != nil {
 			return nil, err
@@ -1209,7 +1212,7 @@ func (p *AccountPool) resourceOwners() []string {
 
 // TryAcquireFor 尝试获取账户槽位并立即返回当前结果
 func (p *AccountPool) TryAcquireFor(ctx context.Context, selection AccountSelection) (*AccountLease, bool, error) {
-	selection = p.keyScopedSelection(ctx, selection)
+	selection = p.scopedSelection(ctx, selection)
 	if selection.ResourceID != "" {
 		if err := p.refreshResource(ctx, selection.ResourceID); err != nil {
 			return nil, false, err
@@ -1306,15 +1309,19 @@ func (p *AccountPool) noEligibleErrorLocked(selection AccountSelection) error {
 		return errNoAccounts
 	}
 	selection.ModelID = strings.TrimPrefix(strings.TrimSpace(selection.ModelID), "models/")
+	scope, bound := p.modelAccounts[selection.ModelID]
 	var reasons []string
 	for _, account := range p.accounts {
-		if account.Config.Enabled && account.State == AccountReady {
+		if account.Config.Enabled && account.State == AccountReady || bound && !slices.Contains(scope, account.ID) {
 			continue
 		}
 		if selection.ModelID != "" && !p.accountSupportsAnyChannelLocked(account, selection) {
 			continue
 		}
 		reasons = append(reasons, accountStateReason(account))
+	}
+	if len(reasons) == 0 && bound {
+		return fmt.Errorf("%w：模型 %s 绑定的账户都无法调用", ErrNoEligibleAccount, selection.ModelID)
 	}
 	if len(reasons) == 0 {
 		return ErrNoEligibleAccount
@@ -1459,7 +1466,7 @@ func (l *AccountLease) CoolingDown(modelID string) bool {
 	if account == nil {
 		return false
 	}
-	_, active := selectionCooldown(account, scope, AccountSelection{IgnorePlanLimitCooldown: l.ignorePlanLimitCooldown}, time.Now())
+	_, active := selectionCooldown(account, scope, AccountSelection{IgnoreQuotaCooldown: l.ignoreQuotaCooldown}, time.Now())
 	return active
 }
 
@@ -2088,7 +2095,7 @@ func (p *AccountPool) CandidateStatesForScope(
 	return result
 }
 
-// PreferWarmPool 按权益分层轮选初始热账户
+// PreferWarmPool 按权益分层轮选初始热账户，fill-first 时 ACCOUNT_ORDER 列出的账户在前
 func (p *AccountPool) PreferWarmPool(accountIDs []string) []string {
 	type warmCandidate struct {
 		id       string
@@ -2135,6 +2142,13 @@ func (p *AccountPool) PreferWarmPool(accountIDs []string) []string {
 		if !added {
 			break
 		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.routingStrategy != "round-robin" {
+		sort.SliceStable(result, func(left int, right int) bool {
+			return p.accountRankLocked(result[left]) < p.accountRankLocked(result[right])
+		})
 	}
 	return result
 }
@@ -2504,7 +2518,7 @@ func (p *AccountPool) ClassifyCandidates(
 	selection AccountSelection,
 	warmAccountIDs []string,
 ) (AccountCandidateGroups, error) {
-	selection = p.keyScopedSelection(ctx, selection)
+	selection = p.scopedSelection(ctx, selection)
 	selection.ModelID = strings.TrimPrefix(strings.TrimSpace(selection.ModelID), "models/")
 	if selection.ResourceID != "" {
 		if err := p.refreshResource(ctx, selection.ResourceID); err != nil {
@@ -2654,7 +2668,7 @@ func (p *AccountPool) tryAcquireLocked(selection AccountSelection, now time.Time
 		return &AccountLease{
 			pool: p, account: account, authGeneration: account.authGeneration,
 			modelAccessGeneration: account.modelAccessGeneration, refreshRuntime: refreshRuntime, checkedAt: now.UTC(),
-			channel: candidate.channel, ignorePlanLimitCooldown: selection.IgnorePlanLimitCooldown,
+			channel: candidate.channel, ignoreQuotaCooldown: selection.IgnoreQuotaCooldown,
 		}, time.Time{}, true, nil
 	}
 	return nil, earliest, waitable, nil
@@ -2810,9 +2824,20 @@ func (p *AccountPool) selectionIndicesLocked(selection AccountSelection) ([]int,
 	if p.routingStrategy == "round-robin" {
 		last := p.lastPicked[selectionAccessScope(selection)]
 		start := sort.Search(len(indices), func(index int) bool { return p.accounts[indices[index]].ID > last })
-		indices = append(indices[start:], indices[:start]...)
+		return append(indices[start:], indices[:start]...), nil
 	}
+	sort.SliceStable(indices, func(left, right int) bool {
+		return p.accountRankLocked(p.accounts[indices[left]].ID) < p.accountRankLocked(p.accounts[indices[right]].ID)
+	})
 	return indices, nil
+}
+
+// accountRankLocked 返回账户在 ACCOUNT_ORDER 中的位置，未列出的账户排在最后
+func (p *AccountPool) accountRankLocked(accountID string) int {
+	if rank, listed := p.accountOrder[accountID]; listed {
+		return rank
+	}
+	return math.MaxInt
 }
 
 // SetRoutingStrategy 设置账户轮询或优先填满策略
@@ -3551,7 +3576,7 @@ func accountCatalogFingerprint(tier BenefitTier, models []Model) (string, error)
 	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
 }
 
-// selectionCooldown 返回账户在作用域上对选择生效的冷却，IgnorePlanLimitCooldown 的选择不受套餐限额冷却限制
+// selectionCooldown 返回账户在作用域上对选择生效的冷却，IgnoreQuotaCooldown 的选择不受套餐限额与每日限额冷却限制
 func selectionCooldown(account *Account, scope string, selection AccountSelection, now time.Time) (CooldownState, bool) {
 	var selected CooldownState
 	for _, key := range []string{globalCooldownKey, scope} {
@@ -3559,7 +3584,7 @@ func selectionCooldown(account *Account, scope string, selection AccountSelectio
 			continue
 		}
 		cooldown, exists := account.runtime.Cooldowns[key]
-		if !exists || !cooldown.Active(now) || selection.IgnorePlanLimitCooldown && strings.HasPrefix(cooldown.Reason, PlanLimitKind) {
+		if !exists || !cooldown.Active(now) || selection.IgnoreQuotaCooldown && RequestQuotaCooldown(cooldown.Reason) {
 			continue
 		}
 		if selected.Until.IsZero() || cooldown.Until.After(selected.Until) {

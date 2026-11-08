@@ -192,6 +192,11 @@ func (worker *NativeWorker) BrowserStorageState(ctx context.Context) (StorageSta
 	return state, nil
 }
 
+// MergeSetCookieHeaders 把账户在页面之外取得的响应 Cookie 写入当前页面
+func (worker *NativeWorker) MergeSetCookieHeaders(ctx context.Context, headers []string, requestURL string) error {
+	return worker.current().MergeSetCookieHeaders(ctx, headers, requestURL)
+}
+
 // PageCatalog 返回账户当前页面载入时目录 RPC 的响应正文
 func (worker *NativeWorker) PageCatalog() camoufoxnative.PageCatalog {
 	return worker.current().PageCatalog()

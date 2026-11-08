@@ -321,9 +321,14 @@ func (refresher *authRuntimeRefresher) Refresh(ctx context.Context, generation u
 	account := lease.Account()
 	startedAt := time.Now()
 	refreshed := false
+	logRenewal := func(level, message string) {
+		if startup, _ := ctx.Value(workerStartupRenewalKey{}).(bool); !startup {
+			refresher.requests.log(account.Config.Label, level, message)
+		}
+	}
 	err := lease.RefreshStorageState(generation, func(state *aistudio.StorageState) error {
 		refreshed = true
-		refresher.requests.log(account.Config.Label, "INFO", "账户认证续签 | 1/2 | 刷新 Cookie")
+		logRenewal("INFO", "账户认证续签 | 1/2 | 刷新 Cookie")
 		extension, exists, err := state.AuthExtension()
 		if err != nil {
 			return err
@@ -340,7 +345,7 @@ func (refresher *authRuntimeRefresher) Refresh(ctx context.Context, generation u
 			if extension.Source.Browser != "chrome" || !strings.EqualFold(extension.Source.Email, account.ID) {
 				return errors.Join(fmt.Errorf("账户 %s 缺少可更新的 Chrome 来源", account.ID), err)
 			}
-			refresher.requests.log(account.Config.Label, "INFO", "账户认证续签 | 更新 Chrome 来源材料")
+			logRenewal("INFO", "账户认证续签 | 更新 Chrome 来源材料")
 			updated, importErr := refresher.importCurrent(ctx, extension.Source, extension.OAuth, proxy)
 			if importErr != nil {
 				return errors.Join(err, importErr)
@@ -360,7 +365,7 @@ func (refresher *authRuntimeRefresher) Refresh(ctx context.Context, generation u
 		_, err = aistudio.NewSigner().Authorization(*state)
 		return err
 	}, func() error {
-		refresher.requests.log(account.Config.Label, "INFO", "账户认证续签 | 2/2 | 重置协议运行时")
+		logRenewal("INFO", "账户认证续签 | 2/2 | 重置协议运行时")
 		if err := refresher.reset(account.ID); err != nil {
 			return fmt.Errorf("重置账户 %s runtime: %w", account.ID, err)
 		}
@@ -368,7 +373,7 @@ func (refresher *authRuntimeRefresher) Refresh(ctx context.Context, generation u
 	})
 	if err != nil {
 		wrapped := fmt.Errorf("保存账户 %s 认证状态: %w", account.ID, err)
-		refresher.requests.log(account.Config.Label, "ERROR", fmt.Sprintf(
+		logRenewal("ERROR", fmt.Sprintf(
 			"账户认证续签失败 | 耗时=%s | 错误=%s",
 			time.Since(startedAt).Round(time.Millisecond), wrapped.Error(),
 		))
@@ -380,7 +385,7 @@ func (refresher *authRuntimeRefresher) Refresh(ctx context.Context, generation u
 	if err := resetCookieAuthUser(lease, refresher.prepareWorker); err != nil {
 		return fmt.Errorf("保存账户 %s 会话序号: %w", account.ID, err)
 	}
-	refresher.requests.log(account.Config.Label, "INFO", fmt.Sprintf(
+	logRenewal("INFO", fmt.Sprintf(
 		"账户认证续签完成 | 耗时=%s",
 		time.Since(startedAt).Round(time.Millisecond),
 	))
