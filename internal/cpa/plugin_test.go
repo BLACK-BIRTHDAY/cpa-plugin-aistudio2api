@@ -45,6 +45,9 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 	if !strings.Contains(string(regJSON), `"Name":"aistudio2api"`) {
 		t.Fatalf("unexpected registration metadata: %s", string(regJSON))
 	}
+	if !strings.Contains(string(regJSON), `"Logo":"https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690345.svg"`) {
+		t.Fatalf("missing expected logo in registration metadata: %s", string(regJSON))
+	}
 	if !strings.Contains(string(regJSON), `"executor":true`) || !strings.Contains(string(regJSON), `"auth_provider":true`) {
 		t.Fatalf("missing expected capabilities: %s", string(regJSON))
 	}
