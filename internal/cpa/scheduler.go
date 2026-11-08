@@ -226,33 +226,57 @@ func (p *Plugin) handleQuotaFetch(raw []byte) (any, error) {
 	tierName := "FREE"
 	remaining := 1.0
 	resetTime := ""
-	desc := "Ready"
+	desc := "全部模型就绪可用"
 	modelsCount := 0.0
+	now := time.Now()
 	if matched != nil {
 		if matched.BenefitTier != "" {
 			tierName = string(matched.BenefitTier)
 		}
-		modelsCount = float64(len(matched.Models))
-		desc = fmt.Sprintf("State: %s", matched.State)
-		if matched.State == aistudio.AccountCooldown || len(matched.Cooldowns) > 0 {
-			remaining = 0.0
-			for _, cd := range matched.Cooldowns {
-				if !cd.Until.IsZero() {
-					resetTime = cd.Until.Format(time.RFC3339)
-				}
-				if cd.Reason != "" {
-					desc = cd.Reason
-				}
-				break
+		totalModels := len(matched.Models)
+		modelsCount = float64(totalModels)
+
+		activeCooldowns := make(map[string]aistudio.CooldownState)
+		var earliestReset time.Time
+		var primaryReason string
+		for scope, cd := range matched.Cooldowns {
+			if !cd.Until.IsZero() && now.After(cd.Until) {
+				_ = rt.Admin.ClearCooldown(p.ctx, matched.ID, scope)
+				continue
 			}
+			activeCooldowns[scope] = cd
+			if earliestReset.IsZero() || (!cd.Until.IsZero() && cd.Until.Before(earliestReset)) {
+				earliestReset = cd.Until
+				primaryReason = cd.Reason
+			}
+		}
+
+		if matched.State == aistudio.AccountAuthRequired || !matched.Enabled {
+			remaining = 0.0
+			desc = "账户需要重新登录或已停用"
 			if matched.Message != "" {
 				desc = matched.Message
 			}
-		} else if matched.State == aistudio.AccountAuthRequired || !matched.Enabled {
-			remaining = 0.0
-			if matched.Message != "" {
-				desc = matched.Message
+		} else if len(activeCooldowns) > 0 {
+			if !earliestReset.IsZero() {
+				resetTime = earliestReset.Format(time.RFC3339)
 			}
+			if primaryReason != "" {
+				desc = primaryReason
+			}
+			if _, isGlobal := activeCooldowns["*"]; isGlobal || matched.State == aistudio.AccountCooldown || (totalModels > 0 && len(activeCooldowns) >= totalModels) {
+				remaining = 0.0
+			} else if totalModels > 0 {
+				available := totalModels - len(activeCooldowns)
+				if available < 0 {
+					available = 0
+				}
+				remaining = float64(available) / float64(totalModels)
+				desc = fmt.Sprintf("%d/%d 模型可用 | %s", available, totalModels, primaryReason)
+			}
+		} else {
+			remaining = 1.0
+			desc = "全部模型就绪可用"
 		}
 	}
 	return pluginapi.QuotaFetchResponse{
