@@ -187,7 +187,7 @@ func (p *Plugin) handleRequestComplete(raw []byte) (any, error) {
 func (p *Plugin) handleQuotaIdentifier() (any, error) {
 	return rpcIdentifierResponse{
 		Identifier:          ProviderID,
-		Identifiers:         []string{"aistudio2api", "aistudio", "google-aistudio"},
+		Identifiers:         nil,
 		CredentialProviders: []string{"aistudio2api", "aistudio", "google-aistudio"},
 	}, nil
 }
