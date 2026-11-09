@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestAgentToolSchemaCompatibility 验证常见 Agent 工具 Schema 的稳定转换规则
@@ -248,5 +249,35 @@ func TestFunctionResultNameInference(t *testing.T) {
 				t.Fatal("input mutated")
 			}
 		})
+	}
+}
+
+func TestAssistantFailurePerUserQuotaEscalation(t *testing.T) {
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+
+	rawPerUser := json.RawMessage(`["quota exceeded",["You have reached your quota limit",null,null,false,true]]`)
+	errPerUser, err := decodeAssistantFailure(rawPerUser, "$[5]", rawPerUser)
+	if err != nil {
+		t.Fatalf("decodeAssistantFailure failed: %v", err)
+	}
+	if !errPerUser.PerUserQuota {
+		t.Fatalf("expected PerUserQuota=true for detail[4]=true")
+	}
+	cdPerUser, ok := QuotaCooldownForError(errPerUser, now)
+	if !ok || cdPerUser.Kind != PlanLimitKind || !cdPerUser.Escalate {
+		t.Fatalf("expected PlanLimitKind + Escalate=true, got ok=%v cd=%+v", ok, cdPerUser)
+	}
+
+	rawGeneric := json.RawMessage(`["rate limit",["Too many concurrent requests",null,null,true,false]]`)
+	errGeneric, err := decodeAssistantFailure(rawGeneric, "$[5]", rawGeneric)
+	if err != nil {
+		t.Fatalf("decodeAssistantFailure generic failed: %v", err)
+	}
+	if errGeneric.PerUserQuota {
+		t.Fatalf("expected PerUserQuota=false for detail[3]=true, detail[4]=false")
+	}
+	cdGeneric, ok := QuotaCooldownForError(errGeneric, now)
+	if !ok || cdGeneric.Kind != "短期限额" || cdGeneric.Escalate {
+		t.Fatalf("expected 短期限额 + Escalate=false, got ok=%v cd=%+v", ok, cdGeneric)
 	}
 }

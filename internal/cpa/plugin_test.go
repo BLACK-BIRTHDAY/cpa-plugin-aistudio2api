@@ -18,6 +18,7 @@ import (
 func TestPluginLifecycleAndCapabilities(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
 	var hostCalls []string
 	p := cpa.NewPlugin(func(method string, payload []byte) ([]byte, error) {
 		hostCalls = append(hostCalls, method)
@@ -229,6 +230,7 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 func TestAuthFileDisabledSyncOnServiceStopAndShutdown(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
 	authDir := filepath.Join(tmpHome, ".cli-proxy-api")
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatalf("mkdir authDir: %v", err)
@@ -411,6 +413,7 @@ func TestDefaultUpstreamChannelsAndStreamedCallUnaryFallback(t *testing.T) {
 func TestExcludedModelsAndAliasPreservation(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
 	_ = os.MkdirAll(filepath.Join(tmpDir, ".cli-proxy-api"), 0o700)
 	accDir := filepath.Join(tmpDir, "accounts", "test@example.com")
 	_ = os.MkdirAll(accDir, 0o700)
@@ -495,5 +498,14 @@ func TestExcludedModelsAndAliasPreservation(t *testing.T) {
 	reconfRes, err := p.HandleMethod(pluginabi.MethodPluginReconfigure, regReq)
 	if err != nil || reconfRes == nil {
 		t.Fatalf("plugin.reconfigure with existing account failed: %v", err)
+	}
+}
+
+func TestStripRawModelPrefixAndHostSchedulerDelegation(t *testing.T) {
+	if got := cpa.StripModelPrefix("_raw/gemini-4-argon-build", "AIStudio/"); got != "gemini-4-argon-build" {
+		t.Fatalf("expected gemini-4-argon-build, got %q", got)
+	}
+	if got := cpa.StripModelPrefix("AIStudio/_raw/gemini-4-argon", "AIStudio/"); got != "gemini-4-argon" {
+		t.Fatalf("expected gemini-4-argon, got %q", got)
 	}
 }

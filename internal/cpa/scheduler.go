@@ -90,10 +90,23 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 	}
 
 	// Classify candidates using AIStudio2API's native AccountPool (respecting benefit tiers, model catalog, cooldowns, and active concurrency)
-	groups, classifyErr := rt.Pool().ClassifyCandidates(p.ctx, aistudio.AccountSelection{
-		ModelID: cleanModel,
-		Method:  "generateContent",
-	}, nil)
+	allowedAccounts := make([]string, 0, len(candidateByAccount))
+	for accID := range candidateByAccount {
+		allowedAccounts = append(allowedAccounts, accID)
+	}
+	selection := aistudio.AccountSelection{
+		ModelID:           cleanModel,
+		Method:            "generateContent",
+		AllowedAccountIDs: allowedAccounts,
+	}
+	groups, classifyErr := rt.Pool().ClassifyCandidates(p.ctx, selection, nil)
+
+	hostDispatched := false
+	if req.Options.Metadata != nil {
+		if selID, ok := req.Options.Metadata[pluginapi.SelectionIDMetadataKey].(string); ok && strings.TrimSpace(selID) != "" {
+			hostDispatched = true
+		}
+	}
 
 	if classifyErr == nil {
 		orderedTiers := [][]string{
@@ -103,28 +116,47 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 			groups.StandbyBusy,
 			groups.WarmBusy,
 		}
+		var firstEligibleAuthID string
+		eligibleCandidateCount := 0
 		for _, tier := range orderedTiers {
 			for _, accID := range tier {
 				if authID, ok := candidateByAccount[strings.ToLower(strings.TrimSpace(accID))]; ok && authID != "" {
-					return pluginapi.SchedulerPickResponse{
-						Handled: true,
-						AuthID:  authID,
-					}, nil
+					if firstEligibleAuthID == "" {
+						firstEligibleAuthID = authID
+					}
+					eligibleCandidateCount++
 				}
 			}
+		}
+
+		// When all host candidates are eligible in the plugin pool too, defer to host's
+		// SessionAffinitySelector + RoundRobinSelector so multi-turn conversations stay bound
+		// to the same account while new conversations are distributed across accounts.
+		if hostDispatched && eligibleCandidateCount == len(candidateByAccount) && eligibleCandidateCount > 0 {
+			return pluginapi.SchedulerPickResponse{Handled: false}, nil
+		}
+
+		if firstEligibleAuthID != "" {
+			return pluginapi.SchedulerPickResponse{
+				Handled: true,
+				AuthID:  firstEligibleAuthID,
+			}, nil
 		}
 
 		// If a generic pool auth file exists and at least one pool account is eligible, pick it
 		totalEligible := len(groups.WarmReady) + len(groups.StandbyReady) + len(groups.WarmAvailable) + len(groups.StandbyBusy) + len(groups.WarmBusy)
 		if totalEligible > 0 && poolFallbackCandidateID != "" {
+			if hostDispatched && len(candidateByAccount) == 0 {
+				return pluginapi.SchedulerPickResponse{Handled: false}, nil
+			}
 			return pluginapi.SchedulerPickResponse{
 				Handled: true,
 				AuthID:  poolFallbackCandidateID,
 			}, nil
 		}
 
-		// If all accounts in the pool are cooling down for this model and cooldown exceeds 60s, report 429 cooldown
-		if totalEligible == 0 && !groups.EarliestCooldown.Until.IsZero() && time.Until(groups.EarliestCooldown.Until) > time.Minute {
+		// If all candidate accounts are cooling down for this model, report 429 cooldown
+		if totalEligible == 0 && !groups.EarliestCooldown.Until.IsZero() && time.Until(groups.EarliestCooldown.Until) > 0 {
 			return pluginapi.SchedulerPickResponse{
 				Handled:      true,
 				Reject:       true,
@@ -132,6 +164,10 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 				RejectReason: fmt.Sprintf("all AI Studio accounts for model %s are cooling down until %s (%s)", cleanModel, groups.EarliestCooldown.Until.Format(time.RFC3339), groups.EarliestCooldown.Reason),
 			}, nil
 		}
+	}
+
+	if hostDispatched {
+		return pluginapi.SchedulerPickResponse{Handled: false}, nil
 	}
 
 	// Fallback: match any ready/busy account from Pool.Status()

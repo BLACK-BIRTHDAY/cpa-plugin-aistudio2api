@@ -208,10 +208,18 @@ func (p *Plugin) isKnownModel(modelID string) bool {
 
 func StripModelPrefix(model string, configuredPrefix string) string {
 	trimmed := strings.TrimSpace(model)
-	lower := strings.ToLower(trimmed)
-	for _, pfx := range []string{strings.ToLower(strings.TrimSpace(configuredPrefix)), "aistudio/", "aistudio2api/"} {
-		if pfx != "" && strings.HasPrefix(lower, pfx) {
-			return strings.TrimSpace(trimmed[len(pfx):])
+	for {
+		lower := strings.ToLower(trimmed)
+		stripped := false
+		for _, pfx := range []string{strings.ToLower(strings.TrimSpace(configuredPrefix)), "aistudio/", "aistudio2api/", "_raw/"} {
+			if pfx != "" && strings.HasPrefix(lower, pfx) {
+				trimmed = strings.TrimSpace(trimmed[len(pfx):])
+				stripped = true
+				break
+			}
+		}
+		if !stripped {
+			break
 		}
 	}
 	return trimmed
