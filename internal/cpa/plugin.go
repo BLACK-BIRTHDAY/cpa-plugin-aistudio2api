@@ -206,6 +206,7 @@ func (p *Plugin) handleRegister(raw []byte) (any, error) {
 			Version:          PluginVersion,
 			Author:           "jianli9158 (Upstream: Mag1cFall)",
 			GitHubRepository: "https://github.com/jianli9158/cpa-plugin-aistudio2api",
+			Logo:             "https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690345.svg",
 			ConfigFields: []pluginapi.ConfigField{
 				{
 					Name:        "waa_backend",
