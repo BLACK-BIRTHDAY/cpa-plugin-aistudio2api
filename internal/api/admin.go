@@ -266,6 +266,7 @@ type RuntimeConfig struct {
 	GoogleSearch              bool                 `json:"google_search"`
 	FirstEventHedge           string               `json:"first_event_hedge"`
 	FirstEventHedgeModels     string               `json:"first_event_hedge_models"`
+	AssistantFallback         bool                 `json:"assistant_fallback"`
 	ContinuationRewrite       bool                 `json:"continuation_rewrite"`
 	ContinuationPrompt        string               `json:"continuation_prompt"`
 	LogFile                   bool                 `json:"log_file"`

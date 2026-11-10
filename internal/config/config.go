@@ -67,6 +67,7 @@ var configKeys = [...]string{
 	"GOOGLE_SEARCH",
 	"FIRST_EVENT_HEDGE",
 	"FIRST_EVENT_HEDGE_MODELS",
+	"ASSISTANT_FALLBACK",
 	"CONTINUATION_REWRITE",
 	"CONTINUATION_PROMPT",
 }
@@ -93,7 +94,7 @@ const FirstEventHedgeOff = "off"
 const FirstEventHedgeAuto = "auto"
 
 // DefaultFirstEventHedgeModels 是 FIRST_EVENT_HEDGE_MODELS 的默认值
-const DefaultFirstEventHedgeModels = "gemini-4-argon"
+const DefaultFirstEventHedgeModels = "gemini-4-argon,gemini-3.8-flash"
 
 // MediaOutputInline 表示 Chat 与 Messages 正文以 data URI 内联生成的媒体
 const MediaOutputInline = "inline"
@@ -123,6 +124,7 @@ type Config struct {
 	GoogleSearch           bool
 	FirstEventHedge        string
 	FirstEventHedgeModels  string
+	AssistantFallback      bool
 	ContinuationRewrite    bool
 	ContinuationPrompt     string
 	AuthStates             string
@@ -175,6 +177,7 @@ func Default() Config {
 		SearchModelAliases:     true,
 		FirstEventHedge:        FirstEventHedgeAuto,
 		FirstEventHedgeModels:  DefaultFirstEventHedgeModels,
+		AssistantFallback:      true,
 		ContinuationRewrite:    true,
 		ContinuationPrompt:     DefaultContinuationPrompt,
 		AuthStates:             defaultAuthStates,
@@ -223,6 +226,7 @@ var configSetters = map[string]func(*Config, string) error{
 	"FAKE_STREAM":              boolSetter("FAKE_STREAM", func(c *Config) *bool { return &c.FakeStream }),
 	"SEARCH_MODEL_ALIASES":     boolSetter("SEARCH_MODEL_ALIASES", func(c *Config) *bool { return &c.SearchModelAliases }),
 	"GOOGLE_SEARCH":            boolSetter("GOOGLE_SEARCH", func(c *Config) *bool { return &c.GoogleSearch }),
+	"ASSISTANT_FALLBACK":       boolSetter("ASSISTANT_FALLBACK", func(c *Config) *bool { return &c.AssistantFallback }),
 	"YOUTUBE_LINKS":            boolSetter("YOUTUBE_LINKS", func(c *Config) *bool { return &c.YouTubeLinks }),
 	"STRIP_THOUGHT_SIGNATURES": boolSetter("STRIP_THOUGHT_SIGNATURES", func(c *Config) *bool { return &c.StripThoughtSignatures }),
 	"CONTINUATION_REWRITE":     boolSetter("CONTINUATION_REWRITE", func(c *Config) *bool { return &c.ContinuationRewrite }),
@@ -577,6 +581,7 @@ func (c Config) envValues() map[string]string {
 		"GOOGLE_SEARCH":            strconv.FormatBool(c.GoogleSearch),
 		"FIRST_EVENT_HEDGE":        c.FirstEventHedge,
 		"FIRST_EVENT_HEDGE_MODELS": c.FirstEventHedgeModels,
+		"ASSISTANT_FALLBACK":       strconv.FormatBool(c.AssistantFallback),
 		"CONTINUATION_REWRITE":     strconv.FormatBool(c.ContinuationRewrite),
 		"CONTINUATION_PROMPT":      c.ContinuationPrompt,
 		"AISTUDIO_AUTH_STATES":     c.AuthStates,

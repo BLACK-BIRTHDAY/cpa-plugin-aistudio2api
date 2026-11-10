@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 	"github.com/Mag1cFall/AIStudio2API/internal/cpa"
@@ -48,6 +49,12 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 	}
 	if !strings.Contains(string(regJSON), `"executor":true`) || !strings.Contains(string(regJSON), `"auth_provider":true`) {
 		t.Fatalf("missing expected capabilities: %s", string(regJSON))
+	}
+	if !strings.Contains(string(regJSON), `"executor_model_scope":"both"`) {
+		t.Fatalf("expected executor_model_scope=both, got: %s", string(regJSON))
+	}
+	if !strings.Contains(string(regJSON), `"first_event_hedge_models"`) || !strings.Contains(string(regJSON), `"assistant_fallback"`) {
+		t.Fatalf("missing expected config fields (first_event_hedge_models, assistant_fallback): %s", string(regJSON))
 	}
 
 	// 2. auth.identifier & auth.parse
@@ -418,7 +425,7 @@ func TestExcludedModelsAndAliasPreservation(t *testing.T) {
 	accDir := filepath.Join(tmpDir, "accounts", "test@example.com")
 	_ = os.MkdirAll(accDir, 0o700)
 	_ = os.WriteFile(filepath.Join(accDir, "account.json"), []byte(`{"label":"test@example.com","enabled":true,"locale":"en-US","timezone":"Asia/Tokyo"}`), 0o600)
-	_ = os.WriteFile(filepath.Join(accDir, "storage-state.json"), []byte(`{"cookies":[{"name":"SAPISID","value":"123","domain":".google.com","path":"/","expires":-1},{"name":"__Secure-1PSID","value":"456","domain":".google.com","path":"/","expires":-1}]}`), 0o600)
+	_ = os.WriteFile(filepath.Join(accDir, "storage-state.json"), []byte(`{"cookies":[{"name":"SAPISID","value":"123","domain":".google.com","path":"/","expires":-1},{"name":"__Secure-1PAPISID","value":"456","domain":".google.com","path":"/","expires":-1},{"name":"__Secure-3PAPISID","value":"789","domain":".google.com","path":"/","expires":-1}]}`), 0o600)
 	p := cpa.NewPlugin(nil)
 	defer func() {
 		_, _ = p.HandleMethod(pluginabi.MethodPluginShutdown, nil)
@@ -434,8 +441,8 @@ func TestExcludedModelsAndAliasPreservation(t *testing.T) {
 		t.Fatalf("plugin.register failed: %v", err)
 	}
 	regJSON, _ := json.Marshal(regRes)
-	if !strings.Contains(string(regJSON), `"executor_model_scope":"oauth"`) {
-		t.Fatalf("expected executor_model_scope=oauth, got %s", string(regJSON))
+	if !strings.Contains(string(regJSON), `"executor_model_scope":"both"`) {
+		t.Fatalf("expected executor_model_scope=both, got %s", string(regJSON))
 	}
 
 	rawCred := []byte(`{
@@ -507,5 +514,149 @@ func TestStripRawModelPrefixAndHostSchedulerDelegation(t *testing.T) {
 	}
 	if got := cpa.StripModelPrefix("AIStudio/_raw/gemini-4-argon", "AIStudio/"); got != "gemini-4-argon" {
 		t.Fatalf("expected gemini-4-argon, got %q", got)
+	}
+}
+
+func TestParsePluginConfigHedgeAndAssistantFallback(t *testing.T) {
+	// 1. Defaults
+	_, cfgDef, err := cpa.ParsePluginConfig([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("ParsePluginConfig default error: %v", err)
+	}
+	if cfgDef.FirstEventHedgeModels != "gemini-4-argon,gemini-3.8-flash" {
+		t.Fatalf("expected default FirstEventHedgeModels=gemini-4-argon,gemini-3.8-flash, got %q", cfgDef.FirstEventHedgeModels)
+	}
+	if !cfgDef.AssistantFallback {
+		t.Fatalf("expected default AssistantFallback=true")
+	}
+
+	// 2. Explicit top-level config
+	topYAML := []byte("first_event_hedge_models: gemini-4-argon\nassistant_fallback: false\n")
+	pcfgTop, cfgTop, err := cpa.ParsePluginConfig(topYAML)
+	if err != nil {
+		t.Fatalf("ParsePluginConfig top error: %v", err)
+	}
+	if pcfgTop.FirstEventHedgeModels != "gemini-4-argon" || cfgTop.FirstEventHedgeModels != "gemini-4-argon" {
+		t.Fatalf("expected FirstEventHedgeModels=gemini-4-argon, got %q", cfgTop.FirstEventHedgeModels)
+	}
+	if pcfgTop.AssistantFallback == nil || *pcfgTop.AssistantFallback || cfgTop.AssistantFallback {
+		t.Fatalf("expected AssistantFallback=false, got pcfg=%v cfg=%v", pcfgTop.AssistantFallback, cfgTop.AssistantFallback)
+	}
+
+	// 3. Merged from options
+	optYAML := []byte("options:\n  first_event_hedge_models: gemini-3.8-flash\n  assistant_fallback: false\n")
+	pcfgOpt, cfgOpt, err := cpa.ParsePluginConfig(optYAML)
+	if err != nil {
+		t.Fatalf("ParsePluginConfig opt error: %v", err)
+	}
+	if pcfgOpt.FirstEventHedgeModels != "gemini-3.8-flash" || cfgOpt.FirstEventHedgeModels != "gemini-3.8-flash" {
+		t.Fatalf("expected FirstEventHedgeModels=gemini-3.8-flash, got %q", cfgOpt.FirstEventHedgeModels)
+	}
+	if pcfgOpt.AssistantFallback == nil || *pcfgOpt.AssistantFallback || cfgOpt.AssistantFallback {
+		t.Fatalf("expected AssistantFallback=false via options")
+	}
+}
+
+func TestSchedulerPickAssistantFallbackOnCooldown(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
+	_ = os.MkdirAll(filepath.Join(tmpDir, ".cli-proxy-api"), 0o700)
+	accDir := filepath.Join(tmpDir, "accounts", "user@example.com")
+	_ = os.MkdirAll(accDir, 0o700)
+	_ = os.WriteFile(filepath.Join(accDir, "account.json"), []byte(`{"label":"user@example.com","enabled":true,"locale":"en-US","timezone":"Asia/Tokyo"}`), 0o600)
+	_ = os.WriteFile(filepath.Join(accDir, "storage-state.json"), []byte(`{"cookies":[{"name":"SAPISID","value":"123","domain":".google.com","path":"/","expires":-1},{"name":"__Secure-1PAPISID","value":"456","domain":".google.com","path":"/","expires":-1},{"name":"__Secure-3PAPISID","value":"789","domain":".google.com","path":"/","expires":-1}]}`), 0o600)
+
+	p := cpa.NewPlugin(nil)
+	defer func() {
+		_, _ = p.HandleMethod(pluginabi.MethodPluginShutdown, nil)
+	}()
+
+	cfgYAML := []byte("data_dir: \"" + filepath.ToSlash(tmpDir) + "\"\nwaa_backend: spidermonkey\nauto_start: false\nsync_auth_files: false\nassistant_fallback: true\n")
+	regReq, _ := json.Marshal(map[string]any{
+		"config_yaml":    cfgYAML,
+		"schema_version": pluginabi.SchemaVersion,
+	})
+	if _, err := p.HandleMethod(pluginabi.MethodPluginRegister, regReq); err != nil {
+		t.Fatalf("plugin.register failed: %v", err)
+	}
+
+	rt, err := p.Runtime()
+	if err != nil {
+		t.Fatalf("runtime error: %v", err)
+	}
+
+	if err := rt.Pool().SetCatalog("user@example.com", aistudio.BenefitTierPro, []aistudio.Model{
+		{
+			ID:           "gemini-test-waterfall",
+			Methods:      []string{"generateContent"},
+			Capabilities: map[string]bool{"chat_model": true, "code_assistant": true},
+		},
+		{
+			ID:           "gemini-test-waterfall-build",
+			Methods:      []string{"generateContent"},
+			Capabilities: map[string]bool{"chat_model": true, "assistant_route": true},
+		},
+	}); err != nil {
+		t.Fatalf("SetCatalog failed: %v", err)
+	}
+
+	// 1. Before cooldown, picking gemini-test-waterfall succeeds on playground
+	schedReq, _ := json.Marshal(pluginapi.SchedulerPickRequest{
+		Provider: "aistudio2api",
+		Model:    "gemini-test-waterfall",
+		Candidates: []pluginapi.SchedulerAuthCandidate{
+			{
+				ID:         "aistudio2api-user@example.com.json",
+				Provider:   "aistudio2api",
+				Status:     "active",
+				Attributes: map[string]string{"provider": "aistudio2api", "account_id": "user@example.com"},
+			},
+		},
+	})
+	schedRes, err := p.HandleMethod(pluginabi.MethodSchedulerPick, schedReq)
+	if err != nil {
+		t.Fatalf("scheduler.pick failed: %v", err)
+	}
+	sResp := schedRes.(pluginapi.SchedulerPickResponse)
+	if !sResp.Handled || sResp.AuthID != "aistudio2api-user@example.com.json" {
+		t.Fatalf("expected candidate picked initially, got %+v", sResp)
+	}
+
+	// 2. Mark playground cooldown for gemini-test-waterfall (generation=1 after first SetCatalog)
+	cooldownScope := aistudio.ChannelCooldownScope(aistudio.ChannelPlayground, "gemini-test-waterfall")
+	if err := rt.Pool().MarkCooldownIfGeneration("user@example.com", cooldownScope, 1, time.Now(), time.Now().Add(time.Hour), "quota_exhausted"); err != nil {
+		t.Fatalf("mark cooldown failed: %v", err)
+	}
+
+	// 3. With assistant_fallback=true, scheduler.pick cascades to -build and succeeds
+	schedResWaterfall, err := p.HandleMethod(pluginabi.MethodSchedulerPick, schedReq)
+	if err != nil {
+		t.Fatalf("scheduler.pick waterfall failed: %v", err)
+	}
+	sRespWaterfall := schedResWaterfall.(pluginapi.SchedulerPickResponse)
+	if sRespWaterfall.Reject {
+		t.Fatalf("expected waterfall to -build, got rejection: %s", sRespWaterfall.RejectReason)
+	}
+	if !sRespWaterfall.Handled || sRespWaterfall.AuthID != "aistudio2api-user@example.com.json" {
+		t.Fatalf("expected candidate picked via waterfall, got %+v", sRespWaterfall)
+	}
+
+	// 4. If assistant_fallback is disabled, scheduler.pick rejects with rate_limit_exceeded
+	cfgYAMLNoFallback := []byte("data_dir: \"" + filepath.ToSlash(tmpDir) + "\"\nwaa_backend: spidermonkey\nauto_start: false\nsync_auth_files: false\nassistant_fallback: false\n")
+	regReqNoFallback, _ := json.Marshal(map[string]any{
+		"config_yaml":    cfgYAMLNoFallback,
+		"schema_version": pluginabi.SchemaVersion,
+	})
+	if _, err := p.HandleMethod(pluginabi.MethodPluginReconfigure, regReqNoFallback); err != nil {
+		t.Fatalf("plugin.reconfigure failed: %v", err)
+	}
+	schedResNoFallback, err := p.HandleMethod(pluginabi.MethodSchedulerPick, schedReq)
+	if err != nil {
+		t.Fatalf("scheduler.pick no fallback failed: %v", err)
+	}
+	sRespNoFallback := schedResNoFallback.(pluginapi.SchedulerPickResponse)
+	if !sRespNoFallback.Reject || sRespNoFallback.RejectCode != "rate_limit_exceeded" {
+		t.Fatalf("expected reject with rate_limit_exceeded, got %+v", sRespNoFallback)
 	}
 }

@@ -4,27 +4,27 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
-	"sync"
-	"sync/atomic"
-	"time"
 	"github.com/Mag1cFall/AIStudio2API/internal/api"
 	"github.com/Mag1cFall/AIStudio2API/internal/app"
 	"github.com/Mag1cFall/AIStudio2API/internal/config"
 	"github.com/Mag1cFall/AIStudio2API/internal/pluginabi"
 	"github.com/Mag1cFall/AIStudio2API/internal/pluginapi"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 type HostCallFunc func(method string, payload []byte) ([]byte, error)
 
 type Plugin struct {
-	mu           sync.RWMutex
-	ctx          context.Context
-	cancel       context.CancelFunc
-	pluginCfg    PluginConfig
-	appCfg       config.Config
-	runtime      *app.PluginRuntime
-	hostCall     HostCallFunc
+	mu              sync.RWMutex
+	ctx             context.Context
+	cancel          context.CancelFunc
+	pluginCfg       PluginConfig
+	appCfg          config.Config
+	runtime         *app.PluginRuntime
+	hostCall        HostCallFunc
 	loginStateMu    sync.Mutex
 	loginStates     map[string]*loginSessionState
 	excludedMu      sync.RWMutex
@@ -280,6 +280,24 @@ func (p *Plugin) handleRegister(raw []byte) (any, error) {
 					Default:     "",
 					Description: "英文逗号分隔的模型绑定账户映射（例如 gemini-3.1-pro-preview:a@gmail.com|b@gmail.com）",
 				},
+				{
+					Name:        "first_event_hedge",
+					Type:        pluginapi.ConfigFieldTypeString,
+					Default:     "auto",
+					Description: "首事件超时发起备用对冲请求的时间（例如 auto, off, 6s）",
+				},
+				{
+					Name:        "first_event_hedge_models",
+					Type:        pluginapi.ConfigFieldTypeString,
+					Default:     "gemini-4-argon,gemini-3.8-flash",
+					Description: "启用首事件对冲（first_event_hedge）的模型列表（逗号分隔）",
+				},
+				{
+					Name:        "assistant_fallback",
+					Type:        pluginapi.ConfigFieldTypeBoolean,
+					Default:     true,
+					Description: "Playground 账户全量配额冷却时自动回退至 Assistant (-build) 通道",
+				},
 			},
 		},
 		Capabilities: rpcCapabilities{
@@ -288,7 +306,7 @@ func (p *Plugin) handleRegister(raw []byte) (any, error) {
 			Scheduler:          true,
 			ModelRouter:        true,
 			Executor:           true,
-			ExecutorModelScope: pluginapi.ExecutorModelScopeOAuth,
+			ExecutorModelScope: pluginapi.ExecutorModelScopeBoth,
 			ExecutorInputFormats: []string{
 				"chat-completions",
 				"responses",
@@ -332,6 +350,8 @@ func (p *Plugin) applyConfig(configYAML []byte) error {
 			return rtErr
 		}
 		p.runtime = rt
+	} else {
+		rt.ApplyConfig(cfg)
 	}
 	p.mu.Unlock()
 	if boolOrDefault(pcfg.SyncAuthFiles, true) && rt != nil {

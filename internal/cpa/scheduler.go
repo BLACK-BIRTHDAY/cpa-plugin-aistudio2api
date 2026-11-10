@@ -108,13 +108,13 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 		}
 	}
 
-	if classifyErr == nil {
+	pickFromClassifiedGroups := func(g aistudio.AccountCandidateGroups) (pluginapi.SchedulerPickResponse, int, bool) {
 		orderedTiers := [][]string{
-			groups.WarmReady,
-			groups.StandbyReady,
-			groups.WarmAvailable,
-			groups.StandbyBusy,
-			groups.WarmBusy,
+			g.WarmReady,
+			g.StandbyReady,
+			g.WarmAvailable,
+			g.StandbyBusy,
+			g.WarmBusy,
 		}
 		var firstEligibleAuthID string
 		eligibleCandidateCount := 0
@@ -133,36 +133,55 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 		// SessionAffinitySelector + RoundRobinSelector so multi-turn conversations stay bound
 		// to the same account while new conversations are distributed across accounts.
 		if hostDispatched && eligibleCandidateCount == len(candidateByAccount) && eligibleCandidateCount > 0 {
-			return pluginapi.SchedulerPickResponse{Handled: false}, nil
+			return pluginapi.SchedulerPickResponse{Handled: false}, 0, true
 		}
 
 		if firstEligibleAuthID != "" {
 			return pluginapi.SchedulerPickResponse{
 				Handled: true,
 				AuthID:  firstEligibleAuthID,
-			}, nil
+			}, 0, true
 		}
 
 		// If a generic pool auth file exists and at least one pool account is eligible, pick it
-		totalEligible := len(groups.WarmReady) + len(groups.StandbyReady) + len(groups.WarmAvailable) + len(groups.StandbyBusy) + len(groups.WarmBusy)
+		totalEligible := len(g.WarmReady) + len(g.StandbyReady) + len(g.WarmAvailable) + len(g.StandbyBusy) + len(g.WarmBusy)
 		if totalEligible > 0 && poolFallbackCandidateID != "" {
 			if hostDispatched && len(candidateByAccount) == 0 {
-				return pluginapi.SchedulerPickResponse{Handled: false}, nil
+				return pluginapi.SchedulerPickResponse{Handled: false}, totalEligible, true
 			}
 			return pluginapi.SchedulerPickResponse{
 				Handled: true,
 				AuthID:  poolFallbackCandidateID,
-			}, nil
+			}, totalEligible, true
 		}
+		return pluginapi.SchedulerPickResponse{}, totalEligible, false
+	}
 
-		// If all candidate accounts are cooling down for this model, report 429 cooldown
-		if totalEligible == 0 && !groups.EarliestCooldown.Until.IsZero() && time.Until(groups.EarliestCooldown.Until) > 0 {
-			return pluginapi.SchedulerPickResponse{
-				Handled:      true,
-				Reject:       true,
-				RejectCode:   "rate_limit_exceeded",
-				RejectReason: fmt.Sprintf("all AI Studio accounts for model %s are cooling down until %s (%s)", cleanModel, groups.EarliestCooldown.Until.Format(time.RFC3339), groups.EarliestCooldown.Reason),
-			}, nil
+	if classifyErr == nil {
+		if resp, _, matched := pickFromClassifiedGroups(groups); matched {
+			return resp, nil
+		} else if totalEligible := len(groups.WarmReady) + len(groups.StandbyReady) + len(groups.WarmAvailable) + len(groups.StandbyBusy) + len(groups.WarmBusy); totalEligible == 0 {
+			if boolOrDefault(p.Config().AssistantFallback, true) && !strings.HasSuffix(cleanModel, "-build") && rt.Pool().AssistantModel(cleanModel+"-build") {
+				fallbackSelection := aistudio.AccountSelection{
+					ModelID:           cleanModel + "-build",
+					Method:            "generateContent",
+					AllowedAccountIDs: allowedAccounts,
+				}
+				if fallbackGroups, fallbackErr := rt.Pool().ClassifyCandidates(p.ctx, fallbackSelection, nil); fallbackErr == nil {
+					if resp, _, matched := pickFromClassifiedGroups(fallbackGroups); matched {
+						return resp, nil
+					}
+				}
+			}
+
+			if !groups.EarliestCooldown.Until.IsZero() && time.Until(groups.EarliestCooldown.Until) > 0 {
+				return pluginapi.SchedulerPickResponse{
+					Handled:      true,
+					Reject:       true,
+					RejectCode:   "rate_limit_exceeded",
+					RejectReason: fmt.Sprintf("all AI Studio accounts for model %s are cooling down until %s (%s)", cleanModel, groups.EarliestCooldown.Until.Format(time.RFC3339), groups.EarliestCooldown.Reason),
+				}, nil
+			}
 		}
 	}
 

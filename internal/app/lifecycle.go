@@ -18,6 +18,7 @@ type managedService interface {
 	State() string
 	ApplyCapacity(warmTarget int, maxActive int, startupConcurrency int, perAccountConcurrency int)
 	SetAPIKeyAccounts(map[string][]string)
+	SetAssistantFallback(bool)
 }
 
 // generationAdmin 表示进程级管理器转交给当前生成服务的管理操作
@@ -512,6 +513,7 @@ func (manager *runtimeManager) RenewAccountCookies(ctx context.Context, accountI
 	defer manager.mu.RUnlock()
 	return manager.current.admin.RenewAccountCookies(ctx, accountID, token, cookies)
 }
+
 // UpdateAccount 在当前生成服务更新账户
 func (manager *runtimeManager) UpdateAccount(ctx context.Context, id string, input api.AccountInput) (api.AdminAccount, error) {
 	manager.mu.RLock()
@@ -566,6 +568,7 @@ func (manager *runtimeManager) UpdateRuntimeConfig(ctx context.Context, value ap
 		manager.current.service.ApplyCapacity(
 			updated.WarmWorkerLimit, updated.MaxActiveWorkers, updated.WarmStartupConcurrency, updated.PerAccountConcurrency,
 		)
+		manager.current.service.SetAssistantFallback(updated.AssistantFallback)
 		updated = manager.decorateRuntimeConfig(updated, manager.current.config)
 	}
 	manager.mu.Unlock()
@@ -653,6 +656,7 @@ func sameDataConfig(value api.RuntimeConfig, active config.Config, overrides dat
 		GoogleSearch:          value.GoogleSearch,
 		FirstEventHedge:       value.FirstEventHedge,
 		FirstEventHedgeModels: value.FirstEventHedgeModels,
+		AssistantFallback:     value.AssistantFallback,
 		ContinuationRewrite:   value.ContinuationRewrite,
 		ContinuationPrompt:    value.ContinuationPrompt,
 		MediaOutput:           value.MediaOutput,
@@ -666,6 +670,7 @@ func sameDataConfig(value api.RuntimeConfig, active config.Config, overrides dat
 		saved.BuildNativeNonstream == active.BuildNativeNonstream &&
 		saved.NonstreamKeepalive == active.NonstreamKeepalive && saved.FakeStream == active.FakeStream &&
 		saved.YouTubeLinks == active.YouTubeLinks && saved.StripThoughtSignatures == active.StripThoughtSignatures && saved.FirstEventHedge == active.FirstEventHedge && saved.FirstEventHedgeModels == active.FirstEventHedgeModels &&
+		saved.AssistantFallback == active.AssistantFallback &&
 		saved.SearchModelAliases == active.SearchModelAliases && saved.GoogleSearch == active.GoogleSearch &&
 		saved.ContinuationRewrite == active.ContinuationRewrite && saved.ContinuationPrompt == active.ContinuationPrompt &&
 		saved.MediaOutput == active.MediaOutput && saved.MediaBaseURL == active.MediaBaseURL

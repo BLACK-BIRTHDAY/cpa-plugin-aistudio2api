@@ -5,6 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
+	"github.com/Mag1cFall/AIStudio2API/internal/app"
+	"github.com/Mag1cFall/AIStudio2API/internal/pluginabi"
+	"github.com/Mag1cFall/AIStudio2API/internal/pluginapi"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,12 +18,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
-	"github.com/Mag1cFall/AIStudio2API/internal/app"
-	"github.com/Mag1cFall/AIStudio2API/internal/pluginabi"
-	"github.com/Mag1cFall/AIStudio2API/internal/pluginapi"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 type rpcExecutorRequest struct {
@@ -71,9 +71,13 @@ func (p *Plugin) prepareExecutionContext(
 	}
 
 	reqCtx := baseCtx
-	if accountID != "" && boolOrDefault(p.Config().PinExecutorAccount, true) {
+	if accountID != "" {
 		if acc, ok := rt.Pool().AccountByID(accountID); ok && acc != nil && acc.Config.Enabled {
-			reqCtx = app.ContextWithPinnedAccountID(reqCtx, acc.ID)
+			if boolOrDefault(p.Config().PinExecutorAccount, false) {
+				reqCtx = app.ContextWithPinnedAccountID(reqCtx, acc.ID)
+			} else {
+				reqCtx = app.ContextWithPreferredAccountID(reqCtx, acc.ID)
+			}
 		}
 	}
 	return reqCtx, rt, nil
@@ -311,6 +315,7 @@ func (p *Plugin) handleExecutorExecuteStream(raw []byte) (any, error) {
 		Headers: sw.clonedHeaders(),
 	}, nil
 }
+
 type liveStreamResponseWriter struct {
 	plugin      *Plugin
 	streamID    string

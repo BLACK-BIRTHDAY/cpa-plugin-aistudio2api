@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Mag1cFall/AIStudio2API/internal/waa/mozjs"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
-	"github.com/Mag1cFall/AIStudio2API/internal/waa/mozjs"
 )
 
 // Options 定义一份 BotGuard VM 的解释器、宿主现场与网络依赖

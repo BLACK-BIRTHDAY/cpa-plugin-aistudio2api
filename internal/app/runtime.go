@@ -109,11 +109,13 @@ func newRuntime(
 	pooled.StripThoughtSignatures = cfg.StripThoughtSignatures
 	pooled.ContinuationRewrite = cfg.ContinuationRewrite
 	pooled.ContinuationPrompt = cfg.ContinuationPrompt
+	pooled.AssistantFallback = cfg.AssistantFallback
 	service := newTrackedService(lifecycle, pooled, pool, requests, workers, cfg.RequestTimeout)
 	service.buildNativeNonstream = cfg.BuildNativeNonstream
 	service.hedgeAuto, service.hedgeAfter, _ = config.ParseFirstEventHedge(cfg.FirstEventHedge)
 	service.hedgeModels = config.ModelList(cfg.FirstEventHedgeModels)
 	service.modelMapping, _ = config.ParseModelMapping(cfg.ModelMapping)
+	service.assistantFallback = cfg.AssistantFallback
 	admin := newRuntimeAdmin(lifecycle, pool, store, service, requests, login, workers, cfg)
 	admin.proxies, admin.globalProxy = proxies, globalProxy
 	service.proxies, service.rebindAccounts = proxies, admin.rebindAccounts
@@ -138,6 +140,7 @@ func newRuntime(
 // trackedService 跟踪生成请求及其唯一账户租约
 type trackedService struct {
 	buildNativeNonstream bool
+	assistantFallback    bool
 	modelMapping         []config.ModelAlias
 	proxies              *aistudio.ProxyPool
 	rebindAccounts       func([]string)
@@ -813,6 +816,13 @@ func (service *trackedService) applyCachedModelCatalog() {
 // SetAPIKeyAccounts 设置各 API key 可用的账户 ID
 func (service *trackedService) SetAPIKeyAccounts(accounts map[string][]string) {
 	service.pool.SetAPIKeyAccounts(accounts)
+}
+
+func (service *trackedService) SetAssistantFallback(fallback bool) {
+	service.assistantFallback = fallback
+	if pooled, ok := service.service.(*aistudio.PooledService); ok {
+		pooled.AssistantFallback = fallback
+	}
 }
 
 func (service *trackedService) ApplyCapacity(warmTarget int, maxActive int, startupConcurrency int, perAccountConcurrency int) {
@@ -1759,6 +1769,8 @@ type generateRetry struct {
 	missingInlineMedia bool
 	// quotaRejected 表示已有尝试收到套餐限额或每日限额拒绝，之后全部账户冷却时不再改用这两种冷却中的账户
 	quotaRejected bool
+	// quotaFailed records whether any attempt failed due to an upstream quota or rate-limit cooldown error.
+	quotaFailed bool
 }
 
 // attemptOutcome 是失败尝试处理后的错误与换号决定
@@ -1793,11 +1805,22 @@ func (service *trackedService) generateWithRetry(
 	}
 	retry.attempted = make(map[string]struct{}, retry.maxAttempts)
 	assistant := service.pool.AssistantModel(modelID)
+	resolveAssistantAccount := func(req aistudio.GenerateRequest) string {
+		if assistantSvc, ok := service.service.(aistudio.AssistantService); ok {
+			if accID := assistantSvc.AssistantAccount(requestCtx, req); accID != "" {
+				return accID
+			}
+		}
+		return PreferredAccountIDFromContext(requestCtx)
+	}
 	preferredAccountID := ""
 	if assistant {
-		preferredAccountID = service.service.(aistudio.AssistantService).AssistantAccount(requestCtx, request)
+		preferredAccountID = resolveAssistantAccount(request)
 	} else {
 		preferredAccountID = service.pool.InlineMediaAccount(request.Contents)
+		if preferredAccountID == "" {
+			preferredAccountID = PreferredAccountIDFromContext(requestCtx)
+		}
 	}
 	hedgeable := !request.Background && !assistant && !service.pool.InteractionAgentModel(modelID) && (service.hedgeAuto || service.hedgeAfter > 0) && slices.Contains(service.hedgeModels, modelID)
 	hedged := false
@@ -1805,6 +1828,23 @@ func (service *trackedService) generateWithRetry(
 	var activity *upstreamActivity
 	var err error
 	copyFiles := false
+	switchToAssistant := func() {
+		service.requests.logRequestProgress(request.ID, "request", "WARN", fmt.Sprintf(
+			"Playground 额度耗尽或冷却 | 自动回退至 Assistant 通道 | 模型=%s-build", modelID,
+		))
+		modelID = modelID + "-build"
+		request.Model = "models/" + modelID
+		assistant = true
+		hedgeable = false
+		preferredAccountID = resolveAssistantAccount(request)
+		continuationRounds = service.pool.OutputContinuationRounds(modelID, request.Config.MaxOutputTokens)
+		retry.attempted = make(map[string]struct{}, retry.maxAttempts)
+		retry.quotaRejected = false
+		retry.quotaFailed = false
+		retry.recoveryAccountID = ""
+		retry.buildRejection = nil
+		copyFiles = false
+	}
 	for attempt := 0; attempt < retry.maxAttempts; attempt++ {
 		selectionAccountID := requestedAccountID
 		recoveringAccount := retry.recoveryAccountID != ""
@@ -1862,7 +1902,8 @@ func (service *trackedService) generateWithRetry(
 				"排队等待 | 已等待=%s | 模型=%s", waited, modelID,
 			))
 		})
-		quotaFallback := !retry.quotaRejected && selection.ResourceID == "" && requestedAccountID == ""
+		canFallbackToAssistant := !assistant && service.assistantFallback && !strings.HasSuffix(modelID, "-build") && service.pool.AssistantModel(modelID+"-build")
+		quotaFallback := !retry.quotaRejected && selection.ResourceID == "" && requestedAccountID == "" && !canFallbackToAssistant
 		lease, acquireErr := service.acquireWarmLease(requestCtx, selection, quotaFallback)
 		var buildCooling *aistudio.AllCoolingError
 		if acquireErr != nil && selection.Channel == aistudio.ChannelBuild && requestCtx.Err() == nil && !aistudio.RequestBuildOnly(request) &&
@@ -1883,6 +1924,11 @@ func (service *trackedService) generateWithRetry(
 				continue
 			}
 			var cooling *aistudio.AllCoolingError
+			if canFallbackToAssistant && requestCtx.Err() == nil && (errors.As(acquireErr, &cooling) || errors.Is(acquireErr, aistudio.ErrNoEligibleAccount)) {
+				switchToAssistant()
+				attempt = -1
+				continue
+			}
 			switch {
 			case err != nil && errors.Is(acquireErr, aistudio.ErrNoEligibleAccount):
 			case retry.attemptFailure != nil && errors.As(acquireErr, &cooling):
@@ -1966,6 +2012,11 @@ func (service *trackedService) generateWithRetry(
 		}
 		err = last.err
 		if !last.retryable {
+			if canFallbackToAssistant && (retry.quotaRejected || retry.quotaFailed) && requestCtx.Err() == nil {
+				switchToAssistant()
+				attempt = -1
+				continue
+			}
 			break
 		}
 		if last.recoverWorker {
@@ -1974,6 +2025,11 @@ func (service *trackedService) generateWithRetry(
 			retry.maxAttempts++
 		}
 		if attempt+1 == retry.maxAttempts {
+			if canFallbackToAssistant && (retry.quotaRejected || retry.quotaFailed) && requestCtx.Err() == nil {
+				switchToAssistant()
+				attempt = -1
+				continue
+			}
 			break
 		}
 		if last.recoverWorker {
@@ -2205,6 +2261,7 @@ func (service *trackedService) settleAttempt(
 	}
 	cooldown, quotaFailure := aistudio.QuotaCooldownForError(err, time.Now())
 	if quotaFailure {
+		retry.quotaFailed = true
 		retry.quotaRejected = retry.quotaRejected || aistudio.RequestQuotaCooldown(cooldown.Reason)
 		modelAccessScope := lease.CooldownScope(modelID)
 		scopeLabel := modelAccessScope

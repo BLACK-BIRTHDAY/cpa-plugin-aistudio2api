@@ -29,8 +29,8 @@ const (
 	assistantUploadMethod = "Upload"
 	// assistantProofField 是 CodeAssistantOffline 的 WAA proof 字段
 	assistantProofField = 2
-	// assistantDefaultThinkingLevel 是 Build 对话默认的 high 思考强度
-	assistantDefaultThinkingLevel = 3
+	// assistantDefaultThinkingLevel is the default low thinking level for Build conversations when unset by the client
+	assistantDefaultThinkingLevel = 1
 	// assistantCleanupTimeout 是取消未完成生成任务的期限
 	assistantCleanupTimeout = time.Minute
 	// assistantFence 是 Markdown 代码块的围栏

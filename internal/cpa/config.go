@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,37 +20,39 @@ const (
 
 // PluginConfig defines the YAML/JSON configuration under plugins.configs.aistudio2api in CLIProxyAPI's config.yaml.
 type PluginConfig struct {
-	DataDir               string   `json:"data_dir" yaml:"data_dir"`
-	AccountsDir           string   `json:"accounts_dir" yaml:"accounts_dir"`
-	Proxy                 string   `json:"proxy" yaml:"proxy"`
-	WAABackend            string   `json:"waa_backend" yaml:"waa_backend"`
-	WarmWorkers           *int     `json:"warm_workers" yaml:"warm_workers"`
-	MaxActiveWorkers      *int     `json:"max_active_workers" yaml:"max_active_workers"`
-	WarmStartupConc       *int     `json:"warm_startup_concurrency" yaml:"warm_startup_concurrency"`
-	PerAccountConcurrency *int     `json:"per_account_concurrency" yaml:"per_account_concurrency"`
-	UpstreamChannels      []string `json:"upstream_channels" yaml:"upstream_channels"`
-	RoutingStrategy       string   `json:"routing_strategy" yaml:"routing_strategy"`
-	AccountOrder          string   `json:"account_order" yaml:"account_order"`
-	ModelChannels         string   `json:"model_channels" yaml:"model_channels"`
-	ModelAccounts         string   `json:"model_accounts" yaml:"model_accounts"`
-	ModelAliases          string   `json:"model_aliases" yaml:"model_aliases"`
-	ModelMapping          string   `json:"model_mapping,omitempty" yaml:"model_mapping,omitempty"`
-	BuildNativeNonstream  *bool    `json:"build_native_nonstream" yaml:"build_native_nonstream"`
-	NonstreamKeepalive    *bool    `json:"nonstream_keepalive" yaml:"nonstream_keepalive"`
-	FakeStream             *bool  `json:"fake_stream" yaml:"fake_stream"`
-	StripThoughtSignatures *bool  `json:"strip_thought_signatures" yaml:"strip_thought_signatures"`
-	YouTubeLinks           *bool  `json:"youtube_links" yaml:"youtube_links"`
-	FirstEventHedge        string `json:"first_event_hedge" yaml:"first_event_hedge"`
-	SearchModelAliases    *bool    `json:"search_model_aliases" yaml:"search_model_aliases"`
-	GoogleSearch          *bool    `json:"google_search" yaml:"google_search"`
-	ContinuationRewrite   *bool    `json:"continuation_rewrite" yaml:"continuation_rewrite"`
-	ContinuationPrompt    string   `json:"continuation_prompt" yaml:"continuation_prompt"`
-	AutoStart             *bool    `json:"auto_start" yaml:"auto_start"`
-	PinExecutorAccount    *bool    `json:"pin_executor_account" yaml:"pin_executor_account"`
-	RouteUnprefixedModels *bool    `json:"route_unprefixed_models" yaml:"route_unprefixed_models"`
-	SyncAuthFiles         *bool    `json:"sync_auth_files" yaml:"sync_auth_files"`
-	ModelPrefix           string        `json:"model_prefix" yaml:"model_prefix"`
-	Options               *PluginConfig `json:"options,omitempty" yaml:"options,omitempty"`
+	DataDir                string        `json:"data_dir" yaml:"data_dir"`
+	AccountsDir            string        `json:"accounts_dir" yaml:"accounts_dir"`
+	Proxy                  string        `json:"proxy" yaml:"proxy"`
+	WAABackend             string        `json:"waa_backend" yaml:"waa_backend"`
+	WarmWorkers            *int          `json:"warm_workers" yaml:"warm_workers"`
+	MaxActiveWorkers       *int          `json:"max_active_workers" yaml:"max_active_workers"`
+	WarmStartupConc        *int          `json:"warm_startup_concurrency" yaml:"warm_startup_concurrency"`
+	PerAccountConcurrency  *int          `json:"per_account_concurrency" yaml:"per_account_concurrency"`
+	UpstreamChannels       []string      `json:"upstream_channels" yaml:"upstream_channels"`
+	RoutingStrategy        string        `json:"routing_strategy" yaml:"routing_strategy"`
+	AccountOrder           string        `json:"account_order" yaml:"account_order"`
+	ModelChannels          string        `json:"model_channels" yaml:"model_channels"`
+	ModelAccounts          string        `json:"model_accounts" yaml:"model_accounts"`
+	ModelAliases           string        `json:"model_aliases" yaml:"model_aliases"`
+	ModelMapping           string        `json:"model_mapping,omitempty" yaml:"model_mapping,omitempty"`
+	BuildNativeNonstream   *bool         `json:"build_native_nonstream" yaml:"build_native_nonstream"`
+	NonstreamKeepalive     *bool         `json:"nonstream_keepalive" yaml:"nonstream_keepalive"`
+	FakeStream             *bool         `json:"fake_stream" yaml:"fake_stream"`
+	StripThoughtSignatures *bool         `json:"strip_thought_signatures" yaml:"strip_thought_signatures"`
+	YouTubeLinks           *bool         `json:"youtube_links" yaml:"youtube_links"`
+	FirstEventHedge        string        `json:"first_event_hedge" yaml:"first_event_hedge"`
+	FirstEventHedgeModels  string        `json:"first_event_hedge_models" yaml:"first_event_hedge_models"`
+	AssistantFallback      *bool         `json:"assistant_fallback" yaml:"assistant_fallback"`
+	SearchModelAliases     *bool         `json:"search_model_aliases" yaml:"search_model_aliases"`
+	GoogleSearch           *bool         `json:"google_search" yaml:"google_search"`
+	ContinuationRewrite    *bool         `json:"continuation_rewrite" yaml:"continuation_rewrite"`
+	ContinuationPrompt     string        `json:"continuation_prompt" yaml:"continuation_prompt"`
+	AutoStart              *bool         `json:"auto_start" yaml:"auto_start"`
+	PinExecutorAccount     *bool         `json:"pin_executor_account" yaml:"pin_executor_account"`
+	RouteUnprefixedModels  *bool         `json:"route_unprefixed_models" yaml:"route_unprefixed_models"`
+	SyncAuthFiles          *bool         `json:"sync_auth_files" yaml:"sync_auth_files"`
+	ModelPrefix            string        `json:"model_prefix" yaml:"model_prefix"`
+	Options                *PluginConfig `json:"options,omitempty" yaml:"options,omitempty"`
 }
 
 func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
@@ -132,6 +135,12 @@ func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
 			}
 			if pcfg.FirstEventHedge == "" {
 				pcfg.FirstEventHedge = opt.FirstEventHedge
+			}
+			if pcfg.FirstEventHedgeModels == "" {
+				pcfg.FirstEventHedgeModels = opt.FirstEventHedgeModels
+			}
+			if pcfg.AssistantFallback == nil {
+				pcfg.AssistantFallback = opt.AssistantFallback
 			}
 			if pcfg.SearchModelAliases == nil {
 				pcfg.SearchModelAliases = opt.SearchModelAliases
@@ -255,7 +264,26 @@ func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
 	cfg.FakeStream = boolOrDefault(pcfg.FakeStream, false)
 	cfg.StripThoughtSignatures = boolOrDefault(pcfg.StripThoughtSignatures, false)
 	cfg.YouTubeLinks = boolOrDefault(pcfg.YouTubeLinks, true)
+	hedgeModels := strings.TrimSpace(pcfg.FirstEventHedgeModels)
+	if hedgeModels == "" {
+		hedgeModels = strings.TrimSpace(os.Getenv("FIRST_EVENT_HEDGE_MODELS"))
+	}
+	if hedgeModels == "" {
+		hedgeModels = config.DefaultFirstEventHedgeModels
+	}
 	cfg.FirstEventHedge = hedge
+	cfg.FirstEventHedgeModels = hedgeModels
+	if pcfg.AssistantFallback != nil {
+		cfg.AssistantFallback = *pcfg.AssistantFallback
+	} else if env := strings.TrimSpace(os.Getenv("ASSISTANT_FALLBACK")); env != "" {
+		if b, err := strconv.ParseBool(env); err == nil {
+			cfg.AssistantFallback = b
+		} else {
+			cfg.AssistantFallback = true
+		}
+	} else {
+		cfg.AssistantFallback = true
+	}
 	cfg.SearchModelAliases = boolOrDefault(pcfg.SearchModelAliases, true)
 	cfg.GoogleSearch = boolOrDefault(pcfg.GoogleSearch, false)
 	cfg.ContinuationRewrite = boolOrDefault(pcfg.ContinuationRewrite, true)

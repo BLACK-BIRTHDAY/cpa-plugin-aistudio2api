@@ -281,3 +281,46 @@ func TestAssistantFailurePerUserQuotaEscalation(t *testing.T) {
 		t.Fatalf("expected 短期限额 + Escalate=false, got ok=%v cd=%+v", ok, cdGeneric)
 	}
 }
+
+func TestAssistantThinkingLevelDefaultsAndExplicit(t *testing.T) {
+	defaults := GenerationDefaults{
+		ThinkingLevels: []int64{1, 2, 3, 4},
+	}
+
+	// 1. Unspecified reasoning effort and budget -> default is 1 (low)
+	level, err := assistantThinkingLevel(GenerationConfig{}, defaults)
+	if err != nil {
+		t.Fatalf("assistantThinkingLevel default failed: %v", err)
+	}
+	if level != 1 {
+		t.Fatalf("expected default thinking level 1 (low), got %d", level)
+	}
+
+	// 2. Explicit reasoning effort mappings
+	for effort, want := range map[string]int64{
+		"minimal": 4,
+		"none":    4,
+		"low":     1,
+		"medium":  2,
+		"high":    3,
+	} {
+		cfg := GenerationConfig{ReasoningEffort: effort}
+		got, err := assistantThinkingLevel(cfg, defaults)
+		if err != nil {
+			t.Fatalf("effort=%s error=%v", effort, err)
+		}
+		if got != want {
+			t.Fatalf("effort=%s got %d, want %d", effort, got, want)
+		}
+	}
+
+	// 3. Explicit thinking budget
+	budget := int64(1024)
+	budgetLevel, err := assistantThinkingLevel(GenerationConfig{ThinkingBudget: &budget}, defaults)
+	if err != nil {
+		t.Fatalf("budget error: %v", err)
+	}
+	if budgetLevel != thinkingLevelForBudget(budget) {
+		t.Fatalf("budget level=%d, want=%d", budgetLevel, thinkingLevelForBudget(budget))
+	}
+}
