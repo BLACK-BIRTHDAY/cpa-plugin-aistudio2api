@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,8 +32,10 @@ type Plugin struct {
 	excludedMu      sync.RWMutex
 	accountExcluded map[string][]string
 	hostExcluded    map[string][]string
+	hostAuthDir     string
 	chromeLogin     sync.Mutex
 	serviceStopped  atomic.Bool
+	shuttingDown    atomic.Bool
 	lastRegisterNs  atomic.Int64
 }
 
@@ -61,7 +65,41 @@ func (p *Plugin) SetHostCall(fn HostCallFunc) {
 	p.mu.Unlock()
 }
 
+func (p *Plugin) updateHostConfig(host pluginapi.HostConfigSummary) {
+	if len(host.ExcludedModels) > 0 {
+		p.setHostExcludedModels(host.ExcludedModels)
+	}
+	authDir := strings.TrimSpace(host.AuthDir)
+	if strings.HasPrefix(authDir, "~/") {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			authDir = filepath.Join(home, authDir[2:])
+		}
+	}
+	if authDir != "" {
+		p.excludedMu.Lock()
+		p.hostAuthDir = authDir
+		p.excludedMu.Unlock()
+	}
+}
+
+func (p *Plugin) resolveHostAuthDir() string {
+	p.excludedMu.RLock()
+	dir := p.hostAuthDir
+	p.excludedMu.RUnlock()
+	if dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return filepath.Join(home, ".cli-proxy-api")
+}
+
 func (p *Plugin) Runtime() (*app.PluginRuntime, error) {
+	if p.shuttingDown.Load() {
+		return nil, fmt.Errorf("plugin is shutting down")
+	}
 	p.mu.RLock()
 	rt := p.runtime
 	p.mu.RUnlock()
@@ -70,6 +108,9 @@ func (p *Plugin) Runtime() (*app.PluginRuntime, error) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.shuttingDown.Load() {
+		return nil, fmt.Errorf("plugin is shutting down")
+	}
 	if p.runtime != nil {
 		return p.runtime, nil
 	}
@@ -196,9 +237,13 @@ func (p *Plugin) handleRegister(raw []byte) (any, error) {
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &req)
 	}
-	if err := p.applyConfig(req.ConfigYAML); err != nil {
+	if err := p.applyConfig(req.ConfigYAML, false); err != nil {
 		return nil, err
 	}
+	return p.registrationPayload(), nil
+}
+
+func (p *Plugin) registrationPayload() rpcRegistration {
 	return rpcRegistration{
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
@@ -307,18 +352,26 @@ func (p *Plugin) handleRegister(raw []byte) (any, error) {
 			ManagementAPI:          true,
 			QuotaProvider:          true,
 		},
-	}, nil
+	}
 }
 
 func (p *Plugin) handleReload(raw []byte) (any, error) {
-	return p.handleRegister(raw)
+	var req rpcLifecycleRequest
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &req)
+	}
+	if err := p.applyConfig(req.ConfigYAML, true); err != nil {
+		return nil, err
+	}
+	return p.registrationPayload(), nil
 }
 
-func (p *Plugin) applyConfig(configYAML []byte) error {
+func (p *Plugin) applyConfig(configYAML []byte, isReload bool) error {
 	pcfg, cfg, err := ParsePluginConfig(configYAML)
 	if err != nil {
 		return err
 	}
+	p.shuttingDown.Store(false)
 	p.mu.Lock()
 	p.pluginCfg = pcfg
 	p.appCfg = cfg
@@ -333,9 +386,11 @@ func (p *Plugin) applyConfig(configYAML []byte) error {
 			return rtErr
 		}
 		p.runtime = rt
+	} else if isReload {
+		rt.ApplyLiveConfig(cfg)
 	}
 	p.mu.Unlock()
-	if boolOrDefault(pcfg.SyncAuthFiles, true) && rt != nil {
+	if boolOrDefault(pcfg.SyncAuthFiles, true) && rt != nil && !p.serviceStopped.Load() {
 		p.setHostAuthFilesDisabled(rt, false)
 	}
 	return nil
@@ -357,6 +412,7 @@ func (p *Plugin) handleQuiesce() (any, error) {
 }
 
 func (p *Plugin) handleShutdown() (any, error) {
+	p.shuttingDown.Store(true)
 	p.serviceStopped.Store(true)
 	p.mu.Lock()
 	rt := p.runtime
@@ -371,6 +427,7 @@ func (p *Plugin) handleShutdown() (any, error) {
 	p.excludedMu.Lock()
 	clear(p.accountExcluded)
 	clear(p.hostExcluded)
+	p.hostAuthDir = ""
 	p.excludedMu.Unlock()
 	if syncAuth && rt != nil {
 		p.setHostAuthFilesDisabled(rt, true)

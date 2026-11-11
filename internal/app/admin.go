@@ -175,7 +175,7 @@ func (admin *runtimeAdmin) CreateAccount(ctx context.Context, input api.AccountC
 	}
 	var created api.AdminAccount
 	if _, exists := admin.accountIDs()[strings.ToLower(strings.TrimSpace(result.Email))]; exists {
-		created, err = admin.saveExistingAccountState(ctx, result.Email, result.StorageState, directory)
+		created, err = admin.saveExistingAccountState(ctx, result.Email, 0, result.StorageState, directory)
 	} else {
 		created, err = admin.addAccount(ctx, accountConfig, result.StorageState, directory)
 	}
@@ -238,10 +238,13 @@ func cookieAccountEntries(template api.CookieBrowser, accounts []chromeauth.Cook
 	return entries
 }
 
-// accountIDs 返回已导入账户的小写 ID
+// accountIDs 返回已导入且未处于认证失效状态的账户小写 ID
 func (admin *runtimeAdmin) accountIDs() map[string]struct{} {
 	existing := make(map[string]struct{})
 	for _, status := range admin.pool.Status() {
+		if status.State == aistudio.AccountAuthRequired {
+			continue
+		}
 		existing[strings.ToLower(strings.TrimSpace(status.ID))] = struct{}{}
 	}
 	return existing
@@ -294,7 +297,7 @@ func (admin *runtimeAdmin) ImportAccountState(ctx context.Context, input api.Acc
 	}
 	for _, status := range admin.pool.Status() {
 		if strings.EqualFold(status.ID, strings.TrimSpace(email)) {
-			account, err := admin.saveExistingAccountState(ctx, status.ID, input.StorageState, "")
+			account, err := admin.saveExistingAccountState(ctx, status.ID, accountConfig.AuthUser, input.StorageState, "")
 			if err != nil {
 				return api.AdminAccount{}, err
 			}
@@ -630,9 +633,11 @@ func (admin *runtimeAdmin) LoginAccount(ctx context.Context, accountID string, v
 func (admin *runtimeAdmin) saveExistingAccountState(
 	ctx context.Context,
 	accountID string,
+	authUser int,
 	state aistudio.StorageState,
 	fingerprintDirectory string,
 ) (api.AdminAccount, error) {
+	admin.cancelTransition(accountID)
 	lease, err := admin.pool.AcquireAccount(ctx, accountID)
 	if err != nil {
 		return api.AdminAccount{}, accountOperationError(err)
@@ -652,15 +657,11 @@ func (admin *runtimeAdmin) saveExistingAccountState(
 	if err := lease.SaveStorageState(state); err != nil {
 		return api.AdminAccount{}, errors.Join(err, lease.Release())
 	}
-	if err := resetCookieAuthUser(lease, admin.workers.prepareUpdate); err != nil {
+	if err := setCookieAuthUser(lease, authUser, admin.workers.prepareUpdate); err != nil {
 		return api.AdminAccount{}, errors.Join(err, lease.Release())
 	}
 	if err := admin.service.changeModels(func() error {
-		return errors.Join(
-			admin.pool.MarkReady(account.ID),
-			admin.pool.ResetModelAccess(account.ID),
-			admin.pool.SetCatalog(account.ID, account.BenefitTier, nil),
-		)
+		return admin.pool.MarkReady(account.ID)
 	}); err != nil {
 		return api.AdminAccount{}, errors.Join(err, lease.Release())
 	}
@@ -673,12 +674,17 @@ func (admin *runtimeAdmin) saveExistingAccountState(
 
 // resetCookieAuthUser 在账户认证状态换成单账号 Cookie 后把会话序号归零并同步到 Worker
 func resetCookieAuthUser(lease *aistudio.AccountLease, prepare func(*aistudio.Account, aistudio.AccountConfig) (*accountWorkerUpdate, error)) error {
+	return setCookieAuthUser(lease, 0, prepare)
+}
+
+// setCookieAuthUser 把账户 Cookie 的会话序号改为 authUser 并同步到 Worker
+func setCookieAuthUser(lease *aistudio.AccountLease, authUser int, prepare func(*aistudio.Account, aistudio.AccountConfig) (*accountWorkerUpdate, error)) error {
 	account := lease.Account()
-	if account.Config.AuthUser == 0 {
+	if account.Config.AuthUser == authUser {
 		return nil
 	}
 	accountConfig := account.Config
-	accountConfig.AuthUser = 0
+	accountConfig.AuthUser = authUser
 	workerUpdate, err := prepare(account, accountConfig)
 	if err != nil {
 		return err

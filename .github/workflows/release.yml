@@ -9,7 +9,7 @@ on:
       tag:
         description: "Release tag (e.g. v1.0.1)"
         required: true
-        default: "v1.1.6"
+        default: "v1.2.2"
 
 permissions:
   contents: write
@@ -53,6 +53,11 @@ jobs:
             os: ubuntu-24.04
             ext: .dll
             sm_platform: windows-amd64
+          - goos: windows
+            goarch: arm64
+            os: ubuntu-24.04
+            ext: .dll
+            sm_platform: windows-arm64
 
     steps:
       - name: Checkout
@@ -76,15 +81,25 @@ jobs:
         run: |
           curl -fsSL https://github.com/mstorsjo/llvm-mingw/releases/download/20261020/llvm-mingw-20261020-ucrt-ubuntu-22.04-x86_64.tar.xz | tar -xJ -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/llvm-mingw-20261020-ucrt-ubuntu-22.04-x86_64/bin" >> "$GITHUB_PATH"
-          echo "CC=x86_64-w64-mingw32-clang" >> "$GITHUB_ENV"
-          echo "CXX=x86_64-w64-mingw32-clang++" >> "$GITHUB_ENV"
+          if [ "${{ matrix.goarch }}" = "arm64" ]; then
+            echo "CC=aarch64-w64-mingw32-clang" >> "$GITHUB_ENV"
+            echo "CXX=aarch64-w64-mingw32-clang++" >> "$GITHUB_ENV"
+          else
+            echo "CC=x86_64-w64-mingw32-clang" >> "$GITHUB_ENV"
+            echo "CXX=x86_64-w64-mingw32-clang++" >> "$GITHUB_ENV"
+          fi
 
       - name: Download Static Libraries (${{ matrix.sm_platform }})
         shell: bash
         run: |
           mkdir -p spidermonkey libwebp
-          curl -fsSL "https://github.com/Mag1cFall/firefox/releases/download/${SPIDERMONKEY_TAG}/spidermonkey-${SPIDERMONKEY_TAG}-${{ matrix.sm_platform }}.tar.gz" | tar -xz -C spidermonkey
-          curl -fsSL "https://github.com/Mag1cFall/libwebp/releases/download/${LIBWEBP_TAG}/libwebp-${LIBWEBP_TAG}-${{ matrix.sm_platform }}.tar.gz" | tar -xz -C libwebp
+          if [ "${{ matrix.sm_platform }}" = "windows-arm64" ]; then
+            curl -fsSL "https://github.com/${{ github.repository }}/releases/download/deps-v1/spidermonkey-${SPIDERMONKEY_TAG}-windows-arm64.tar.gz" | tar -xz -C spidermonkey
+            curl -fsSL "https://github.com/${{ github.repository }}/releases/download/deps-v1/libwebp-${LIBWEBP_TAG}-windows-arm64.tar.gz" | tar -xz -C libwebp
+          else
+            curl -fsSL "https://github.com/Mag1cFall/firefox/releases/download/${SPIDERMONKEY_TAG}/spidermonkey-${SPIDERMONKEY_TAG}-${{ matrix.sm_platform }}.tar.gz" | tar -xz -C spidermonkey
+            curl -fsSL "https://github.com/Mag1cFall/libwebp/releases/download/${LIBWEBP_TAG}/libwebp-${LIBWEBP_TAG}-${{ matrix.sm_platform }}.tar.gz" | tar -xz -C libwebp
+          fi
       - name: Determine Version
         id: ver
         shell: bash

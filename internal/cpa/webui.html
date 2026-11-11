@@ -510,8 +510,8 @@
     </div>
     <div class="auth-bar">
       <span id="keyStatusBadge" class="badge warning">未填入管理密钥</span>
-      <input type="password" id="mgmtKey" placeholder="输入 CPA 管理密钥" style="width: 240px;" oninput="onKeyInputChanged()" />
-      <button onclick="saveKeyAndReload()">保存密钥</button>
+      <input type="password" id="mgmtKey" placeholder="输入 CPA 管理密钥" style="width: 240px;" />
+      <button data-action="save-key">保存密钥</button>
     </div>
   </header>
 
@@ -524,7 +524,7 @@
       </div>
       <div class="stat-value" id="statState">-</div>
       <div class="stat-footer">
-        <button id="serviceToggleBtn" class="success sm" onclick="toggleService()" style="width:100%;">启动服务</button>
+        <button id="serviceToggleBtn" class="success sm" data-action="toggle-service" style="width:100%;">启动服务</button>
       </div>
     </div>
 
@@ -534,7 +534,7 @@
       </div>
       <div class="stat-value" id="statAccounts">0 / 0</div>
       <div class="stat-footer">
-        <button class="secondary sm" onclick="syncAuthFiles()" style="width:100%;">同步至 CPA 凭证目录</button>
+        <button class="secondary sm" data-action="sync-auth" style="width:100%;">同步至 CPA 凭证目录</button>
       </div>
     </div>
 
@@ -578,7 +578,7 @@
             <input type="text" id="chromeLoginProxy" placeholder="例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" style="width:100%;" />
           </div>
         </div>
-        <button id="chromeLoginBtn" class="success" onclick="loginWithChromeBrowser()" style="width:100%; padding:10px 18px; font-weight:600;">
+        <button id="chromeLoginBtn" class="success" data-action="login-chrome" style="width:100%; padding:10px 18px; font-weight:600;">
           启动本机 Chrome 无痕登录
         </button>
       </div>
@@ -603,8 +603,8 @@
           </div>
         </div>
         <div class="row" style="margin-top:4px;">
-          <button onclick="importCookieAccount()" style="flex:1;">导入 Cookie / StorageState 账户</button>
-          <button class="secondary" onclick="discoverCookieAccounts()">预览 Cookie 内账号</button>
+          <button data-action="import-cookie" style="flex:1;">导入 Cookie / StorageState 账户</button>
+          <button class="secondary" data-action="discover-cookie">预览 Cookie 内账号</button>
         </div>
       </div>
     </div>
@@ -617,7 +617,7 @@
         <h2 class="section-title">账户池与 WAA 状态</h2>
         <span id="accountPoolBadge" class="badge">0 个账户</span>
       </div>
-      <button class="secondary sm" onclick="loadStatus()">刷新列表</button>
+      <button class="secondary sm" data-action="load-status">刷新列表</button>
     </div>
     <div class="table-wrap">
       <table>
@@ -660,7 +660,7 @@
         <h2 class="section-title">运行日志</h2>
         <span style="font-size:12px; color:var(--muted);">最近 80 条实时事件</span>
       </div>
-      <button class="secondary sm" onclick="loadLogs()">刷新日志</button>
+      <button class="secondary sm" data-action="load-logs">刷新日志</button>
     </div>
     <div class="logs" id="logsBox">等待连接...</div>
   </div>
@@ -936,9 +936,9 @@ function renderAccounts(accounts, cooldowns) {
       proxyCell =
         '<div class="proxy-editor">' +
           '<input type="text" id="proxyInput_' + escapeHtml(acc.id) + '" value="' + escapeHtml(editingProxyDraft) + '" placeholder="http://127.0.0.1:7890 (留空直连)" style="width:195px; padding:5px 9px; font-size:12px;" />' +
-          '<button class="success sm" onclick="saveAccountProxy(\'' + escapeJs(acc.id) + '\')">保存</button>' +
-          '<button class="secondary sm" onclick="saveAccountProxy(\'' + escapeJs(acc.id) + '\', \'\')">直连</button>' +
-          '<button class="secondary sm" onclick="cancelEditProxy()">取消</button>' +
+          '<button class="success sm" data-action="save-proxy" data-id="' + escapeHtml(acc.id) + '">保存</button>' +
+          '<button class="secondary sm" data-action="clear-proxy" data-id="' + escapeHtml(acc.id) + '">直连</button>' +
+          '<button class="secondary sm" data-action="cancel-proxy">取消</button>' +
         '</div>';
     } else {
       const proxyLabel = acc.proxy
@@ -950,7 +950,7 @@ function renderAccounts(accounts, cooldowns) {
       proxyCell =
         '<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; min-width:160px;">' +
           '<div>' + proxyLabel + egressHint + '</div>' +
-          '<button class="secondary sm" onclick="openEditProxy(\'' + escapeJs(acc.id) + '\', \'' + escapeJs(acc.proxy || '') + '\')">设置代理</button>' +
+          '<button class="secondary sm" data-action="edit-proxy" data-id="' + escapeHtml(acc.id) + '" data-proxy="' + escapeHtml(acc.proxy || '') + '">设置代理</button>' +
         '</div>';
     }
 
@@ -989,25 +989,31 @@ function renderAccounts(accounts, cooldowns) {
     const detailHtml = detailParts.length ? detailParts.join('') : '<span style="color:var(--muted);">正常就绪</span>';
 
     const clearCooldownBtn = hasCooldown
-      ? '<button class="warning sm" onclick="clearCooldowns(\'' + escapeJs(acc.id) + '\', \'\')">清除冷却</button>'
+      ? '<button class="warning sm" data-action="clear-cooldown" data-id="' + escapeHtml(acc.id) + '" data-scope="">清除冷却</button>'
       : '';
 
     const tierText = (acc.benefit_tier || 'FREE').toUpperCase();
     const tierBadgeClass = tierText.includes('PRO') || tierText.includes('PAID') || tierText.includes('ULTRA') ? 'accent' : '';
+    const transitionHint = acc.transition === 'draining'
+      ? ' <span class="badge warning" style="font-size:10px; padding:1px 6px;">排空中</span>'
+      : (acc.transition === 'syncing' ? ' <span class="badge accent" style="font-size:10px; padding:1px 6px;">同步中</span>' : '');
+    const activeHint = acc.active_requests > 0
+      ? ' <span class="badge accent" style="font-size:10px; padding:1px 6px;">并发 ' + Number(acc.active_requests) + '</span>'
+      : '';
 
     return '<tr>' +
       '<td><strong style="color:#fff;">' + escapeHtml(acc.id) + '</strong></td>' +
-      '<td><span class="badge ' + badgeClass + '"><span class="status-dot"></span>' + escapeHtml(acc.state) + '</span></td>' +
+      '<td><span class="badge ' + badgeClass + '"><span class="status-dot"></span>' + escapeHtml(acc.state) + '</span>' + transitionHint + activeHint + '</td>' +
       '<td><span class="badge ' + tierBadgeClass + '">' + escapeHtml(acc.benefit_tier || 'FREE') + '</span></td>' +
       '<td style="font-weight:600;">' + (acc.models ? acc.models.length : 0) + '</td>' +
       '<td>' + proxyCell + '</td>' +
       '<td>' + detailHtml + '</td>' +
       '<td><div style="display:flex; gap:6px; flex-wrap:nowrap; align-items:center;">' +
         clearCooldownBtn +
-        '<button class="sm" onclick="reloginAccount(\'' + escapeJs(acc.id) + '\', \'' + escapeJs(acc.proxy || '') + '\')">无痕重登</button>' +
-        '<button class="secondary sm" onclick="refreshAccount(\'' + escapeJs(acc.id) + '\')">刷新目录</button>' +
-        '<button class="secondary sm" onclick="toggleAccount(\'' + escapeJs(acc.id) + '\', ' + (!acc.enabled) + ', \'' + escapeJs(acc.proxy || '') + '\')">' + (acc.enabled ? '禁用' : '启用') + '</button>' +
-        '<button class="danger sm" onclick="deleteAccount(\'' + escapeJs(acc.id) + '\')">删除</button>' +
+        '<button class="sm" data-action="relogin-account" data-id="' + escapeHtml(acc.id) + '">无痕重登</button>' +
+        '<button class="secondary sm" data-action="refresh-account" data-id="' + escapeHtml(acc.id) + '">刷新目录</button>' +
+        '<button class="secondary sm" data-action="toggle-account" data-id="' + escapeHtml(acc.id) + '" data-enabled="' + (!acc.enabled) + '">' + (acc.enabled ? '禁用' : '启用') + '</button>' +
+        '<button class="danger sm" data-action="delete-account" data-id="' + escapeHtml(acc.id) + '">删除</button>' +
       '</div></td>' +
     '</tr>';
   }).join('');
@@ -1052,7 +1058,7 @@ function renderCooldownOverview(cooldowns) {
         '<td style="white-space:nowrap;"><span class="badge warning" data-until="' + escapeHtml(c.until) + '">' + escapeHtml(remText) + '</span></td>' +
         '<td style="max-width:420px; word-break:break-word; color:var(--text-secondary); font-size:12px; line-height:1.5;">' + escapeHtml(c.reason || '-') + '</td>' +
         '<td style="white-space:nowrap;">' +
-          '<button class="warning sm" onclick="clearCooldowns(\'' + escapeJs(c.account_id) + '\', \'' + escapeJs(c.scope) + '\')">清除此项冷却</button>' +
+          '<button class="warning sm" data-action="clear-cooldown" data-id="' + escapeHtml(c.account_id) + '" data-scope="' + escapeHtml(c.scope) + '">清除此项冷却</button>' +
         '</td>' +
       '</tr>';
     }).join('') +
@@ -1174,10 +1180,10 @@ async function loginWithChromeBrowser() {
   }
 }
 
-async function reloginAccount(id, proxy) {
+async function reloginAccount(id) {
   try {
     showToast('已为账户 ' + id + ' 启动本机 Chrome 独立窗口，请使用该谷歌账号完成登录...', false);
-    const res = await apiCall('/v0/management/aistudio2api/accounts/relogin', 'POST', { account_id: id, proxy: proxy || '' });
+    const res = await apiCall('/v0/management/aistudio2api/accounts/relogin', 'POST', { account_id: id });
     showToast('账户 ' + (res.account ? res.account.id : id) + ' 重新登录并更新成功！', false);
     await loadStatus();
     loadLogs();
@@ -1238,13 +1244,13 @@ async function refreshAccount(id) {
   }
 }
 
-async function toggleAccount(id, enabled, proxy) {
+async function toggleAccount(id, enabled) {
   const acc = (latestAccounts || []).find(a => a.id === id);
   const locale = (acc && acc.locale) ? acc.locale : '';
   const timezone = (acc && acc.timezone) ? acc.timezone : '';
   try {
     await apiCall('/v0/management/aistudio2api/accounts/update', 'POST', {
-      account_id: id, enabled, proxy, locale, timezone
+      account_id: id, enabled, locale, timezone
     });
     loadStatus();
   } catch (e) {
@@ -1328,9 +1334,39 @@ async function loadLogs() {
 function escapeHtml(s) {
   return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
-function escapeJs(s) {
-  return String(s || '').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+const mgmtKeyEl = document.getElementById('mgmtKey');
+if (mgmtKeyEl) {
+  mgmtKeyEl.addEventListener('input', onKeyInputChanged);
+  mgmtKeyEl.addEventListener('keydown', e => {
+    if (e.key === 'Enter') saveKeyAndReload();
+  });
 }
+
+document.addEventListener('click', e => {
+  const btn = e.target.closest('[data-action]');
+  if (!btn || btn.disabled) return;
+  const action = btn.dataset.action;
+  const id = btn.dataset.id || '';
+  switch (action) {
+    case 'save-key': saveKeyAndReload(); break;
+    case 'toggle-service': toggleService(); break;
+    case 'sync-auth': syncAuthFiles(); break;
+    case 'login-chrome': loginWithChromeBrowser(); break;
+    case 'import-cookie': importCookieAccount(); break;
+    case 'discover-cookie': discoverCookieAccounts(); break;
+    case 'load-status': loadStatus(); break;
+    case 'load-logs': loadLogs(); break;
+    case 'edit-proxy': openEditProxy(id, btn.dataset.proxy || ''); break;
+    case 'save-proxy': saveAccountProxy(id); break;
+    case 'clear-proxy': saveAccountProxy(id, ''); break;
+    case 'cancel-proxy': cancelEditProxy(); break;
+    case 'clear-cooldown': clearCooldowns(id, btn.dataset.scope || ''); break;
+    case 'relogin-account': reloginAccount(id); break;
+    case 'refresh-account': refreshAccount(id); break;
+    case 'toggle-account': toggleAccount(id, btn.dataset.enabled === 'true'); break;
+    case 'delete-account': deleteAccount(id); break;
+  }
+});
 
 getKey();
 loadStatus();

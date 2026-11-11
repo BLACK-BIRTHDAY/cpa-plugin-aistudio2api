@@ -500,3 +500,139 @@ func TestExcludedModelsAndAliasPreservation(t *testing.T) {
 		t.Fatalf("plugin.reconfigure with existing account failed: %v", err)
 	}
 }
+
+func TestProxyPasswordPreservationExecutorGuardAndCustomAuthDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataDir := filepath.Join(tmpDir, "data")
+	customAuthDir := filepath.Join(tmpDir, "custom-host-auths")
+	if err := os.MkdirAll(customAuthDir, 0o700); err != nil {
+		t.Fatalf("mkdir custom auth dir: %v", err)
+	}
+	accDir := filepath.Join(dataDir, "accounts", "proxyuser@gmail.com")
+	if err := os.MkdirAll(accDir, 0o700); err != nil {
+		t.Fatalf("mkdir account dir: %v", err)
+	}
+	_ = os.WriteFile(filepath.Join(accDir, "account.json"), []byte(`{"label":"proxyuser@gmail.com","enabled":true,"proxy":"http://alice:super-secret-pass@127.0.0.1:7890","locale":"en-US","timezone":"America/Los_Angeles"}`), 0o600)
+	_ = os.WriteFile(filepath.Join(accDir, "storage-state.json"), []byte(`{"cookies":[{"name":"SAPISID","value":"sapisid-val","domain":".google.com","path":"/","secure":true,"sameSite":"None","expires":-1},{"name":"__Secure-1PSID","value":"1psid-val","domain":".google.com","path":"/","secure":true,"sameSite":"None","expires":-1},{"name":"__Secure-3PSID","value":"3psid-val","domain":".google.com","path":"/","secure":true,"sameSite":"None","expires":-1},{"name":"SID","value":"sid-val","domain":".google.com","path":"/","sameSite":"Lax","expires":-1}],"origins":[]}`), 0o600)
+
+	p := cpa.NewPlugin(nil)
+	defer func() {
+		_, _ = p.HandleMethod(pluginabi.MethodPluginShutdown, []byte(`{}`))
+	}()
+
+	cfgYAML := []byte("data_dir: \"" + dataDir + "\"\nwaa_backend: spidermonkey\nauto_start: false\nsync_auth_files: true\n")
+	regReq, _ := json.Marshal(map[string]any{
+		"config_yaml":    cfgYAML,
+		"schema_version": pluginabi.SchemaVersion,
+	})
+	if _, err := p.HandleMethod(pluginabi.MethodPluginRegister, regReq); err != nil {
+		t.Fatalf("plugin.register failed: %v", err)
+	}
+
+	// 1. Report custom Host.AuthDir via static models call
+	staticReq, _ := json.Marshal(pluginapi.StaticModelRequest{
+		Host: pluginapi.HostConfigSummary{AuthDir: customAuthDir},
+	})
+	if _, err := p.HandleMethod(pluginabi.MethodModelStatic, staticReq); err != nil {
+		t.Fatalf("model.static failed: %v", err)
+	}
+
+	// 2. Verify GET /accounts redacts proxy password in response
+	listReq, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodGet,
+		Path:   "/v0/management/aistudio2api/accounts",
+	})
+	listRes, err := p.HandleMethod(pluginabi.MethodManagementHandle, listReq)
+	if err != nil {
+		t.Fatalf("management list accounts failed: %v", err)
+	}
+	listMgmt := listRes.(pluginapi.ManagementResponse)
+	if strings.Contains(string(listMgmt.Body), "super-secret-pass") {
+		t.Fatalf("GET /accounts leaked cleartext proxy password: %s", string(listMgmt.Body))
+	}
+
+	// Sync to custom Host.AuthDir and verify real proxy password is saved on disk
+	syncReq, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodPost,
+		Path:   "/v0/management/aistudio2api/accounts/sync-auth",
+	})
+	if _, err := p.HandleMethod(pluginabi.MethodManagementHandle, syncReq); err != nil {
+		t.Fatalf("sync-auth failed: %v", err)
+	}
+	customAuthFile := filepath.Join(customAuthDir, "aistudio2api-proxyuser@gmail.com.json")
+	rawAuth, err := os.ReadFile(customAuthFile)
+	if err != nil {
+		t.Fatalf("expected auth file in custom Host.AuthDir %s: %v", customAuthFile, err)
+	}
+	if !strings.Contains(string(rawAuth), "http://alice:super-secret-pass@127.0.0.1:7890") {
+		t.Fatalf("expected custom auth file to retain real proxy password, got: %s", string(rawAuth))
+	}
+	// 3. Toggle account enabled without sending proxy (and then with redacted xxxxx proxy) -> must preserve real password
+	for _, payload := range []map[string]any{
+		{"account_id": "proxyuser@gmail.com", "enabled": false},
+		{"account_id": "proxyuser@gmail.com", "enabled": false, "proxy": "http://alice:xxxxx@127.0.0.1:7890"},
+	} {
+		updBody, _ := json.Marshal(payload)
+		updReq, _ := json.Marshal(pluginapi.ManagementRequest{
+			Method: http.MethodPost,
+			Path:   "/v0/management/aistudio2api/accounts/update",
+			Body:   updBody,
+		})
+		updRes, uErr := p.HandleMethod(pluginabi.MethodManagementHandle, updReq)
+		if uErr != nil {
+			t.Fatalf("management update failed: %v", uErr)
+		}
+		updMgmt := updRes.(pluginapi.ManagementResponse)
+		if updMgmt.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK on update, got %d: %s", updMgmt.StatusCode, string(updMgmt.Body))
+		}
+		if strings.Contains(string(updMgmt.Body), "super-secret-pass") {
+			t.Fatalf("management update response leaked cleartext proxy password: %s", string(updMgmt.Body))
+		}
+	}
+
+	rt, err := p.Runtime()
+	if err != nil {
+		t.Fatalf("p.Runtime() failed: %v", err)
+	}
+	accs, err := rt.Admin.Accounts(t.Context())
+	if err != nil || len(accs) != 1 {
+		t.Fatalf("expected 1 account, got %d (err=%v)", len(accs), err)
+	}
+	if accs[0].Proxy != "http://alice:super-secret-pass@127.0.0.1:7890" {
+		t.Fatalf("real proxy password was clobbered: got %q", accs[0].Proxy)
+	}
+
+	// 4. Verify /api/* routes are blocked on executor.http_request
+	execHTTPReq, _ := json.Marshal(pluginapi.ExecutorHTTPRequest{
+		Method:      http.MethodGet,
+		URL:         "/api/accounts",
+		StorageJSON: rawAuth,
+	})
+	execHTTPRes, err := p.HandleMethod(pluginabi.MethodExecutorHTTPRequest, execHTTPReq)
+	if err != nil {
+		t.Fatalf("executor.http_request returned unexpected error: %v", err)
+	}
+	if execHTTPRes.(pluginapi.ExecutorHTTPResponse).StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for /api/accounts on executor.http_request, got %d", execHTTPRes.(pluginapi.ExecutorHTTPResponse).StatusCode)
+	}
+
+	// 5. Verify live reload updates model_aliases and routing_strategy on existing runtime
+	reloadYAML := []byte("data_dir: \"" + dataDir + "\"\nwaa_backend: spidermonkey\nauto_start: false\nsync_auth_files: true\nrouting_strategy: fill-first\nmodel_aliases: \"live-alias=gemini-3.8-flash\"\n")
+	reloadReq, _ := json.Marshal(map[string]any{
+		"config_yaml":    reloadYAML,
+		"schema_version": pluginabi.SchemaVersion,
+	})
+	if _, err := p.HandleMethod(pluginabi.MethodPluginReconfigure, reloadReq); err != nil {
+		t.Fatalf("plugin.reconfigure failed: %v", err)
+	}
+	routeLiveReq, _ := json.Marshal(pluginapi.ModelRouteRequest{RequestedModel: "live-alias"})
+	routeLiveRes, err := p.HandleMethod(pluginabi.MethodModelRoute, routeLiveReq)
+	if err != nil {
+		t.Fatalf("model.route live-alias failed: %v", err)
+	}
+	liveRoute := routeLiveRes.(pluginapi.ModelRouteResponse)
+	if !liveRoute.Handled || liveRoute.TargetModel != "gemini-3.8-flash" {
+		t.Fatalf("expected live-alias routed to gemini-3.8-flash after reconfigure, got %+v", liveRoute)
+	}
+}

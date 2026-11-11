@@ -62,7 +62,9 @@ import "C"
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -110,13 +112,14 @@ func cliproxyPluginCall(method *C.char, reqPtr *C.uint8_t, reqLen C.size_t, resp
 	methodName := C.GoString(method)
 	var raw []byte
 	if reqPtr != nil && reqLen > 0 {
-		raw = C.GoBytes(unsafe.Pointer(reqPtr), C.int(reqLen))
+		raw = unsafe.Slice((*byte)(unsafe.Pointer(reqPtr)), int(reqLen))
 	}
 
 	result, err := safeHandleMethod(methodName, raw)
 	if err != nil {
-		if pluginErr, ok := err.(*pluginabi.Error); ok && pluginErr != nil {
-			rawErr, _ := pluginabi.NewErrorEnvelope(pluginErr.Code, pluginErr.Message, pluginErr.HTTPStatus)
+		var pluginErr *pluginabi.Error
+		if errors.As(err, &pluginErr) && pluginErr != nil {
+			rawErr, _ := json.Marshal(pluginabi.Envelope{OK: false, Error: pluginErr})
 			writeResponse(resp, rawErr)
 			return 0
 		}
@@ -197,13 +200,13 @@ func callHostABI(method string, payload []byte) ([]byte, error) {
 
 	var reqPtr *C.uint8_t
 	var reqLen C.size_t
+	var pinner runtime.Pinner
 	if len(payload) > 0 {
-		buf := C.CBytes(payload)
-		defer C.free(buf)
-		reqPtr = (*C.uint8_t)(buf)
+		pinner.Pin(&payload[0])
+		defer pinner.Unpin()
+		reqPtr = (*C.uint8_t)(unsafe.Pointer(&payload[0]))
 		reqLen = C.size_t(len(payload))
 	}
-
 	var response C.cliproxy_buffer
 	rc := C.invoke_host_call(host, cMethod, reqPtr, reqLen, &response)
 	if rc != 0 {

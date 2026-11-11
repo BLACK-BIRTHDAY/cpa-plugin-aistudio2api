@@ -102,6 +102,28 @@ func (rt *PluginRuntime) Close() error {
 	return rt.Manager.Close()
 }
 
+// ApplyLiveConfig applies updated routing, channel, capacity, and model mapping settings to an active PluginRuntime without dropping active requests or warm workers.
+func (rt *PluginRuntime) ApplyLiveConfig(cfg config.Config) {
+	if rt == nil || rt.Manager == nil {
+		return
+	}
+	rt.Manager.mu.Lock()
+	defer rt.Manager.mu.Unlock()
+	rt.Manager.current.config = cfg
+	if pool := rt.Manager.current.service.(*trackedService).pool; pool != nil {
+		pool.SetRoutingStrategy(cfg.RoutingStrategy)
+		pool.SetAccountOrder(accountOrder(cfg.AccountOrder))
+		pool.SetUpstreamChannels(upstreamChannels(cfg.UpstreamChannels))
+		pool.SetModelChannels(modelChannels(cfg.ModelChannels))
+		pool.SetModelAccounts(modelAccounts(cfg.ModelAccounts))
+	}
+	if ts, ok := rt.Manager.current.service.(*trackedService); ok && ts != nil {
+		ts.buildNativeNonstream = cfg.BuildNativeNonstream
+		ts.modelMapping, _ = config.ParseModelMapping(cfg.ModelMapping)
+		ts.ApplyCapacity(cfg.WarmWorkerLimit, cfg.MaxActiveWorkers, cfg.WarmStartupConcurrency, cfg.PerAccountConcurrency)
+	}
+}
+
 // EnsureRunning starts the generation service if it is currently STOPPED and at least one account exists.
 func (rt *PluginRuntime) EnsureRunning(ctx context.Context) error {
 	rt.Manager.mu.RLock()

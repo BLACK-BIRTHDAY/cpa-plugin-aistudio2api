@@ -83,6 +83,7 @@ func (p *Plugin) handleAuthParse(raw []byte) (any, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, fmt.Errorf("decode auth.parse request: %w", err)
 	}
+	p.updateHostConfig(req.Host)
 
 	var payload AuthFilePayload
 	if len(req.RawJSON) > 0 {
@@ -253,8 +254,8 @@ func (p *Plugin) parseAndSyncAuthPayload(ctx context.Context, fileName string, r
 		Attributes:       attributes,
 		NextRefreshAfter: time.Now().Add(30 * time.Minute),
 	}
-	if boolOrDefault(p.Config().SyncAuthFiles, true) && fileName != "" && len(readExistingHostAuthFile(fileName)) > 0 && (prevDisabled == nil || *prevDisabled != disabled || prevServiceStopped != serviceStopped) {
-		_ = writeAuthDataToDefaultHostDir(authData)
+	if boolOrDefault(p.Config().SyncAuthFiles, true) && fileName != "" && len(p.readExistingHostAuthFile(fileName)) > 0 && (prevDisabled == nil || *prevDisabled != disabled || prevServiceStopped != serviceStopped) {
+		_ = p.writeAuthDataToHostDir(authData)
 	}
 	return authData, nil
 }
@@ -295,21 +296,10 @@ func (p *Plugin) upsertAccountInRuntime(
 	}
 	if accountID != "" && !forceUpdate {
 		if existing, ok := rt.Pool().AccountByID(accountID); ok && existing != nil && existing.State != aistudio.AccountAuthRequired {
-			sameCookies := false
-			if existing.Directory != "" {
-				if rawState, rErr := os.ReadFile(filepath.Join(existing.Directory, "storage-state.json")); rErr == nil {
-					var existingState aistudio.StorageState
-					if json.Unmarshal(rawState, &existingState) == nil {
-						sameCookies = sameCoreAuthCookies(existingState, state)
-					}
-				}
-			}
-			if sameCookies {
-				accounts, _ := rt.Admin.Accounts(ctx)
-				for _, acc := range accounts {
-					if strings.EqualFold(acc.ID, accountID) {
-						return acc, nil
-					}
+			accounts, _ := rt.Admin.Accounts(ctx)
+			for _, acc := range accounts {
+				if strings.EqualFold(acc.ID, accountID) {
+					return acc, nil
 				}
 			}
 		}
@@ -349,6 +339,7 @@ func (p *Plugin) handleAuthLoginStart(raw []byte) (any, error) {
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &req)
 	}
+	p.updateHostConfig(req.Host)
 	rt, err := p.Runtime()
 	if err != nil {
 		return nil, err
@@ -440,6 +431,7 @@ func (p *Plugin) handleAuthLoginPoll(raw []byte) (any, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
+	p.updateHostConfig(req.Host)
 	rt, err := p.Runtime()
 	if err != nil {
 		return nil, err
@@ -518,6 +510,7 @@ func (p *Plugin) handleAuthRefresh(raw []byte) (any, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
+	p.updateHostConfig(req.Host)
 	rt, err := p.Runtime()
 	if err != nil {
 		return nil, err
@@ -631,7 +624,7 @@ func (p *Plugin) buildAuthDataForAccountWithExisting(
 
 	var diskBytes []byte
 	if boolOrDefault(p.Config().SyncAuthFiles, true) {
-		diskBytes = readExistingHostAuthFile(fileName)
+		diskBytes = p.readExistingHostAuthFile(fileName)
 	}
 	storageBytes, metadata, prefix, proxyURL := mergeAuthPayloadAndMetadata(payload, existingMeta, existingAttrs, diskBytes, existingJSON)
 	if len(storageBytes) == 0 {
@@ -669,15 +662,15 @@ func (p *Plugin) buildAuthDataForAccountWithExisting(
 	}, nil
 }
 
-func readExistingHostAuthFile(fileName string) []byte {
+func (p *Plugin) readExistingHostAuthFile(fileName string) []byte {
 	if strings.TrimSpace(fileName) == "" {
 		return nil
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
+	authDir := p.resolveHostAuthDir()
+	if authDir == "" {
 		return nil
 	}
-	target := filepath.Join(home, ".cli-proxy-api", filepath.Base(fileName))
+	target := filepath.Join(authDir, filepath.Base(fileName))
 	raw, err := os.ReadFile(target)
 	if err != nil {
 		return nil
@@ -783,7 +776,7 @@ func (p *Plugin) SyncAccountToHostAuth(callbackID string, acc api.AdminAccount) 
 	if err != nil {
 		return err
 	}
-	if err := writeAuthDataToDefaultHostDir(authData); err == nil && strings.TrimSpace(callbackID) == "" {
+	if err := p.writeAuthDataToHostDir(authData); err == nil && strings.TrimSpace(callbackID) == "" {
 		return nil
 	}
 	req := map[string]any{
@@ -794,22 +787,48 @@ func (p *Plugin) SyncAccountToHostAuth(callbackID string, acc api.AdminAccount) 
 		"attributes":       authData.Attributes,
 	}
 	if _, err := p.callHost(pluginabi.MethodHostAuthSave, req); err != nil {
-		return writeAuthDataToDefaultHostDir(authData)
+		return p.writeAuthDataToHostDir(authData)
 	}
 	return nil
 }
 
-func writeAuthDataToDefaultHostDir(authData pluginapi.AuthData) error {
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
-		return fmt.Errorf("resolve home dir: %w", err)
+func (p *Plugin) writeAuthDataToHostDir(authData pluginapi.AuthData) error {
+	authDir := p.resolveHostAuthDir()
+	if authDir == "" {
+		return fmt.Errorf("host auth dir is empty")
 	}
-	authDir := filepath.Join(home, ".cli-proxy-api")
 	if info, err := os.Stat(authDir); err != nil || !info.IsDir() {
 		return fmt.Errorf("host auth dir %s not found", authDir)
 	}
 	target := filepath.Join(authDir, filepath.Base(authData.FileName))
-	return os.WriteFile(target, authData.StorageJSON, 0o600)
+	return writeFileAtomically(target, authData.StorageJSON, 0o600)
+}
+
+func writeFileAtomically(target string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".aistudio2api-*.tmp")
+	if err != nil {
+		return os.WriteFile(target, data, perm)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, target); err != nil {
+		_ = os.Remove(tmpPath)
+		return os.WriteFile(target, data, perm)
+	}
+	return nil
 }
 
 func (p *Plugin) SyncAllAccountsToHostDir(rt *app.PluginRuntime) {
@@ -822,7 +841,7 @@ func (p *Plugin) SyncAllAccountsToHostDir(rt *app.PluginRuntime) {
 	}
 	for _, acc := range accounts {
 		if authData, err := p.buildAuthDataForAccount(rt, acc); err == nil {
-			_ = writeAuthDataToDefaultHostDir(authData)
+			_ = p.writeAuthDataToHostDir(authData)
 		}
 	}
 }
@@ -836,20 +855,19 @@ func (p *Plugin) setHostAuthFilesDisabled(rt *app.PluginRuntime, forceDisabled b
 				enabledByAccount[accKey] = acc.Enabled
 				if !forceDisabled {
 					fileName := fmt.Sprintf("aistudio2api-%s.json", sanitizeFileComponent(accKey))
-					if len(readExistingHostAuthFile(fileName)) == 0 {
+					if len(p.readExistingHostAuthFile(fileName)) == 0 {
 						if authData, bErr := p.buildAuthDataForAccount(rt, acc); bErr == nil {
-							_ = writeAuthDataToDefaultHostDir(authData)
+							_ = p.writeAuthDataToHostDir(authData)
 						}
 					}
 				}
 			}
 		}
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
+	authDir := p.resolveHostAuthDir()
+	if authDir == "" {
 		return
 	}
-	authDir := filepath.Join(home, ".cli-proxy-api")
 	entries, err := os.ReadDir(authDir)
 	if err != nil {
 		return
@@ -895,18 +913,18 @@ func (p *Plugin) setHostAuthFilesDisabled(rt *app.PluginRuntime, forceDisabled b
 		}
 		doc["updated_at"] = time.Now().UTC().Format(time.RFC3339)
 		if updated, err := json.Marshal(doc); err == nil {
-			_ = os.WriteFile(fullPath, updated, 0o600)
+			_ = writeFileAtomically(fullPath, updated, 0o600)
 		}
 	}
 }
 
 func (p *Plugin) RemoveAccountFromHostAuth(accountID string) {
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
+	authDir := p.resolveHostAuthDir()
+	if authDir == "" {
 		return
 	}
 	fileName := fmt.Sprintf("aistudio2api-%s.json", sanitizeFileComponent(strings.ToLower(strings.TrimSpace(accountID))))
-	_ = os.Remove(filepath.Join(home, ".cli-proxy-api", fileName))
+	_ = os.Remove(filepath.Join(authDir, fileName))
 }
 
 func extractAccountIDFromAuth(storageJSON []byte, metadata map[string]any, attributes map[string]string) string {
