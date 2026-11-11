@@ -32,11 +32,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             clang lld llvm make m4 pkg-config cmake ninja-build \
-            python3 python3-venv python3-pip zip xz-utils cbindgen
+            python3 python3-venv python3-pip zip xz-utils
+          sudo curl -fsSL "https://github.com/mozilla/cbindgen/releases/download/0.29.4/cbindgen-ubuntu22.04" -o /usr/local/bin/cbindgen
+          sudo chmod +x /usr/local/bin/cbindgen
+          echo "CBINDGEN=/usr/local/bin/cbindgen" >> "$GITHUB_ENV"
           rustup target add aarch64-pc-windows-gnullvm
           rustc --version
           cargo --version
-          cbindgen --version
+          /usr/local/bin/cbindgen --version
 
       - name: Setup LLVM-MinGW (${{ env.LLVM_MINGW_VER }})
         shell: bash
