@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 	"github.com/Mag1cFall/AIStudio2API/internal/api"
@@ -121,17 +122,115 @@ func (rt *PluginRuntime) PublicHandler() http.Handler {
 	return rt.Handler
 }
 
+// SetFirstEventHedge updates first-event hedge threshold and target models on trackedService.
+func (service *trackedService) SetFirstEventHedge(firstEventHedge, firstEventHedgeModels string) {
+	if service == nil {
+		return
+	}
+	trimmed := strings.TrimSpace(firstEventHedge)
+	service.hedgeAuto, service.hedgeAfter, _ = config.ParseFirstEventHedge(trimmed)
+	if !service.hedgeAuto && service.hedgeAfter == 0 && trimmed != "" && trimmed != config.FirstEventHedgeOff {
+		if d, err := time.ParseDuration(trimmed); err == nil && d > 0 {
+			service.hedgeAfter = d
+		} else if clean := strings.TrimSuffix(strings.ToLower(trimmed), "s"); clean != "" {
+			service.hedgeAuto, service.hedgeAfter, _ = config.ParseFirstEventHedge(clean)
+		}
+	}
+	service.hedgeModels = config.ModelList(firstEventHedgeModels)
+}
+
+// HedgeSettings returns the active first-event hedge settings on the underlying trackedService.
+func (rt *PluginRuntime) HedgeSettings() (bool, time.Duration, []string) {
+	if rt == nil || rt.Manager == nil {
+		return false, 0, nil
+	}
+	rt.Manager.mu.RLock()
+	cur := rt.Manager.current
+	rt.Manager.mu.RUnlock()
+	if cur == nil {
+		return false, 0, nil
+	}
+	ts, ok := cur.service.(*trackedService)
+	if !ok || ts == nil {
+		return false, 0, nil
+	}
+	return ts.hedgeAuto, ts.hedgeAfter, append([]string(nil), ts.hedgeModels...)
+}
+
+// WarmWorkerTarget returns the prewarm worker target configured on the underlying worker manager.
+func (rt *PluginRuntime) WarmWorkerTarget() int {
+	if rt == nil || rt.Manager == nil {
+		return 0
+	}
+	rt.Manager.mu.RLock()
+	cur := rt.Manager.current
+	rt.Manager.mu.RUnlock()
+	if cur == nil {
+		return 0
+	}
+	ts, ok := cur.service.(*trackedService)
+	if !ok || ts == nil || ts.workers == nil {
+		return 0
+	}
+	if target := ts.workers.warmLimit(); target > 0 {
+		return target
+	}
+	return ts.workers.PrewarmTarget()
+}
+
 // ApplyConfig reconfigures the running service with updated config.
 func (rt *PluginRuntime) ApplyConfig(cfg config.Config) {
 	if rt == nil || rt.Manager == nil {
 		return
 	}
 	rt.Config = cfg
-	rt.Manager.mu.RLock()
+	rt.Manager.mu.Lock()
+	rt.Manager.activeManagement = cfg
+	if rt.Manager.overrides.authStates != nil {
+		authStates := cfg.AuthStates
+		rt.Manager.overrides.authStates = &authStates
+	}
+	if rt.Manager.overrides.proxy != nil {
+		proxy := cfg.Proxy
+		rt.Manager.overrides.proxy = &proxy
+	}
 	cur := rt.Manager.current
-	rt.Manager.mu.RUnlock()
-	if cur != nil && cur.service != nil {
-		cur.service.SetAssistantFallback(cfg.AssistantFallback)
+	if cur != nil {
+		cur.config = cfg
+		if ra, ok := cur.admin.(*runtimeAdmin); ok && ra != nil {
+			ra.config = cfg
+		}
+	}
+	rt.Manager.mu.Unlock()
+	if cur == nil || cur.service == nil {
+		return
+	}
+	cur.service.SetAssistantFallback(cfg.AssistantFallback)
+	cur.service.ApplyCapacity(
+		cfg.WarmWorkerLimit,
+		cfg.MaxActiveWorkers,
+		cfg.WarmStartupConcurrency,
+		cfg.PerAccountConcurrency,
+	)
+	if ts, ok := cur.service.(*trackedService); ok && ts != nil {
+		ts.SetFirstEventHedge(cfg.FirstEventHedge, cfg.FirstEventHedgeModels)
+		ts.buildNativeNonstream = cfg.BuildNativeNonstream
+		ts.modelMapping, _ = config.ParseModelMapping(cfg.ModelMapping)
+		if pooled, ok := ts.service.(*aistudio.PooledService); ok && pooled != nil {
+			pooled.BuildNativeNonstream = cfg.BuildNativeNonstream
+			pooled.YouTubeLinks = cfg.YouTubeLinks
+			pooled.StripThoughtSignatures = cfg.StripThoughtSignatures
+			pooled.ContinuationRewrite = cfg.ContinuationRewrite
+			pooled.ContinuationPrompt = cfg.ContinuationPrompt
+			pooled.AssistantFallback = cfg.AssistantFallback
+		}
+		if ts.pool != nil {
+			ts.pool.SetRoutingStrategy(cfg.RoutingStrategy)
+			ts.pool.SetAccountOrder(accountOrder(cfg.AccountOrder))
+			ts.pool.SetUpstreamChannels(upstreamChannels(cfg.UpstreamChannels))
+			ts.pool.SetModelChannels(modelChannels(cfg.ModelChannels))
+			ts.pool.SetModelAccounts(modelAccounts(cfg.ModelAccounts))
+		}
 	}
 }
 

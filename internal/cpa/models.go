@@ -83,6 +83,15 @@ func (p *Plugin) handleModelForAuth(raw []byte) (any, error) {
 	}, nil
 }
 
+func hasAIStudioProvider(providers []string) bool {
+	for _, p := range providers {
+		if isAIStudioProvider(p) {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Plugin) handleModelRoute(raw []byte) (any, error) {
 	var req rpcModelRouteRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -91,6 +100,13 @@ func (p *Plugin) handleModelRoute(raw []byte) (any, error) {
 	model := strings.TrimSpace(req.RequestedModel)
 	if model == "" || p.serviceStopped.Load() {
 		return pluginapi.ModelRouteResponse{Handled: false}, nil
+	}
+
+	targetKind := pluginapi.ModelRouteTargetSelf
+	target := PluginID
+	if hasAIStudioProvider(req.AvailableProviders) {
+		targetKind = pluginapi.ModelRouteTargetProvider
+		target = ProviderID
 	}
 
 	prefix := strings.TrimSpace(p.Config().ModelPrefix)
@@ -105,10 +121,13 @@ func (p *Plugin) handleModelRoute(raw []byte) (any, error) {
 			if clean == "" {
 				continue
 			}
+			if mapped := p.resolveConfiguredModelMapping(clean); mapped != "" {
+				clean = mapped
+			}
 			return pluginapi.ModelRouteResponse{
 				Handled:     true,
-				TargetKind:  pluginapi.ModelRouteTargetSelf,
-				Target:      PluginID,
+				TargetKind:  targetKind,
+				Target:      target,
 				TargetModel: clean,
 				Reason:      "routed prefixed AI Studio model to aistudio2api",
 			}, nil
@@ -119,8 +138,8 @@ func (p *Plugin) handleModelRoute(raw []byte) (any, error) {
 		if !p.isModelExcluded(mapped) && !p.isModelExcluded(model) {
 			return pluginapi.ModelRouteResponse{
 				Handled:     true,
-				TargetKind:  pluginapi.ModelRouteTargetSelf,
-				Target:      PluginID,
+				TargetKind:  targetKind,
+				Target:      target,
 				TargetModel: mapped,
 				Reason:      "routed mapped AI Studio model alias to aistudio2api",
 			}, nil

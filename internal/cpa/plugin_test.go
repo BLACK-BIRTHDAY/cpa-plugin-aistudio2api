@@ -660,3 +660,118 @@ func TestSchedulerPickAssistantFallbackOnCooldown(t *testing.T) {
 		t.Fatalf("expected reject with rate_limit_exceeded, got %+v", sRespNoFallback)
 	}
 }
+
+func TestPrefixedModelRouteUsesProviderWhenAvailableAndApplyConfigSyncsHedgeAndCapacity(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
+
+	p := cpa.NewPlugin(nil)
+	defer func() {
+		_, _ = p.HandleMethod(pluginabi.MethodPluginShutdown, nil)
+	}()
+
+	// 1. Calls p.Runtime() BEFORE plugin.register / plugin.reconfigure
+	rt, err := p.Runtime()
+	if err != nil {
+		t.Fatalf("p.Runtime() before register/reconfigure failed: %v", err)
+	}
+
+	initialAuto, initialAfter, _ := rt.HedgeSettings()
+	if !initialAuto || initialAfter != 0 {
+		t.Fatalf("expected initial default hedgeAuto=true, hedgeAfter=0, got auto=%v after=%v", initialAuto, initialAfter)
+	}
+	if initialTarget := rt.WarmWorkerTarget(); initialTarget != 2 {
+		t.Fatalf("expected initial default WarmWorkerTarget=2, got %d", initialTarget)
+	}
+
+	// 2. Calls plugin.reconfigure with updated hedge and capacity settings
+	reconfYAML := []byte("data_dir: \"" + filepath.ToSlash(tmpDir) + "\"\nwaa_backend: spidermonkey\nauto_start: false\nmodel_prefix: \"AIStudio/\"\nfirst_event_hedge: \"6s\"\nfirst_event_hedge_models: \"gemini-4-argon,gemini-3.8-flash\"\nwarm_workers: 7\nmax_active_workers: 7\nper_account_concurrency: 3\n")
+	reconfReq, _ := json.Marshal(map[string]any{
+		"config_yaml":    reconfYAML,
+		"schema_version": pluginabi.SchemaVersion,
+	})
+	if _, err := p.HandleMethod(pluginabi.MethodPluginReconfigure, reconfReq); err != nil {
+		t.Fatalf("plugin.reconfigure failed: %v", err)
+	}
+
+	// 3. Verifies rt.HedgeSettings() and rt.WarmWorkerTarget()
+	hedgeAuto, hedgeAfter, hedgeModels := rt.HedgeSettings()
+	if hedgeAuto {
+		t.Fatalf("expected hedgeAuto=false after reconfigure, got true")
+	}
+	if hedgeAfter != 6*time.Second {
+		t.Fatalf("expected hedgeAfter=6s after reconfigure, got %v", hedgeAfter)
+	}
+	hasArgon := false
+	hasFlash := false
+	for _, m := range hedgeModels {
+		if m == "gemini-4-argon" {
+			hasArgon = true
+		}
+		if m == "gemini-3.8-flash" {
+			hasFlash = true
+		}
+	}
+	if !hasArgon || !hasFlash {
+		t.Fatalf("expected hedgeModels to contain gemini-4-argon and gemini-3.8-flash, got: %v", hedgeModels)
+	}
+
+	if target := rt.WarmWorkerTarget(); target != 7 {
+		t.Fatalf("expected WarmWorkerTarget=7 after reconfigure, got %d", target)
+	}
+
+	// 4. Verifies model.route for "AIStudio/gemini-4-argon" with AvailableProviders: []string{"aistudio2api"}
+	routeWithProviderReq, _ := json.Marshal(pluginapi.ModelRouteRequest{
+		RequestedModel:     "AIStudio/gemini-4-argon",
+		AvailableProviders: []string{"aistudio2api"},
+		Body:               []byte(`{"model":"AIStudio/gemini-4-argon","messages":[{"role":"user","content":"hi"}]}`),
+	})
+	routeRes, err := p.HandleMethod(pluginabi.MethodModelRoute, routeWithProviderReq)
+	if err != nil {
+		t.Fatalf("model.route with provider failed: %v", err)
+	}
+	rResp, ok := routeRes.(pluginapi.ModelRouteResponse)
+	if !ok {
+		t.Fatalf("expected ModelRouteResponse, got %#v", routeRes)
+	}
+	if !rResp.Handled {
+		t.Fatalf("expected model.route with provider Handled=true, got: %+v", rResp)
+	}
+	if rResp.TargetKind != pluginapi.ModelRouteTargetProvider {
+		t.Fatalf("expected TargetKind=%v, got %v", pluginapi.ModelRouteTargetProvider, rResp.TargetKind)
+	}
+	if rResp.Target != "aistudio2api" {
+		t.Fatalf("expected Target=aistudio2api, got %q", rResp.Target)
+	}
+	if rResp.TargetModel != "gemini-4-argon" {
+		t.Fatalf("expected TargetModel=gemini-4-argon, got %q", rResp.TargetModel)
+	}
+
+	// 5. Verifies model.route for "AIStudio/gemini-4-argon" with AvailableProviders: nil
+	routeWithoutProviderReq, _ := json.Marshal(pluginapi.ModelRouteRequest{
+		RequestedModel:     "AIStudio/gemini-4-argon",
+		AvailableProviders: nil,
+		Body:               []byte(`{"model":"AIStudio/gemini-4-argon","messages":[{"role":"user","content":"hi"}]}`),
+	})
+	routeNoRes, err := p.HandleMethod(pluginabi.MethodModelRoute, routeWithoutProviderReq)
+	if err != nil {
+		t.Fatalf("model.route without provider failed: %v", err)
+	}
+	rNoResp, ok := routeNoRes.(pluginapi.ModelRouteResponse)
+	if !ok {
+		t.Fatalf("expected ModelRouteResponse, got %#v", routeNoRes)
+	}
+	if !rNoResp.Handled {
+		t.Fatalf("expected model.route without provider Handled=true, got: %+v", rNoResp)
+	}
+	if rNoResp.TargetKind != pluginapi.ModelRouteTargetSelf {
+		t.Fatalf("expected TargetKind=%v, got %v", pluginapi.ModelRouteTargetSelf, rNoResp.TargetKind)
+	}
+	if rNoResp.Target != "aistudio2api" {
+		t.Fatalf("expected Target=aistudio2api, got %q", rNoResp.Target)
+	}
+	if rNoResp.TargetModel != "gemini-4-argon" {
+		t.Fatalf("expected TargetModel=gemini-4-argon, got %q", rNoResp.TargetModel)
+	}
+}
