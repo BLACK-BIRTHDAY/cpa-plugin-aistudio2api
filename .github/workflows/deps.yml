@@ -141,7 +141,18 @@ jobs:
           assert old_rust in rtext, "rust.configure detect_rustc_target not found"
           rtext = rtext.replace(old_rust, new_rust, 1)
           rust_cfg.write_text(rtext, encoding="utf-8")
-          print("Patched init.configure and rust.configure for aarch64-pc-windows-gnullvm")
+          vixl_cpu = root / "js/src/jit/arm64/vixl/MozCpu-vixl.cpp"
+          vtext = vixl_cpu.read_text(encoding="utf-8")
+          old_ctr = "#if defined(__aarch64__) && !defined(_MSC_VER) && !defined(XP_DARWIN) && !defined(__OpenBSD__)"
+          new_ctr = "#if defined(__aarch64__) && !defined(_WIN32) && !defined(XP_DARWIN) && !defined(__OpenBSD__)"
+          assert old_ctr in vtext, "MozCpu-vixl.cpp ctr_el0 guard not found"
+          vtext = vtext.replace(old_ctr, new_ctr, 1)
+          old_icache = "#elif defined(_MSC_VER) && defined(_M_ARM64)"
+          new_icache = "#elif defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__))"
+          assert old_icache in vtext, "MozCpu-vixl.cpp FlushInstructionCache guard not found"
+          vtext = vtext.replace(old_icache, new_icache, 1)
+          vixl_cpu.write_text(vtext, encoding="utf-8")
+          print("Patched init.configure, rust.configure, and MozCpu-vixl.cpp for Windows ARM64")
           PY
 
           OBJDIR="$RUNNER_TEMP/sm-obj"
