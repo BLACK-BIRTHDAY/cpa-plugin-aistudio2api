@@ -24,8 +24,7 @@ func (p *Plugin) handleModelStatic(raw []byte) (any, error) {
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &req)
 	}
-	p.setHostExcludedModels(req.Host.ExcludedModels)
-	p.setHostModelAliases(req.Host.OAuthModelAlias)
+	p.updateHostConfig(req.Host)
 	models := p.collectCatalogModels()
 	return pluginapi.ModelResponse{
 		Provider: ProviderID,
@@ -38,8 +37,7 @@ func (p *Plugin) handleModelForAuth(raw []byte) (any, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
-	p.setHostExcludedModels(req.Host.ExcludedModels)
-	p.setHostModelAliases(req.Host.OAuthModelAlias)
+	p.updateHostConfig(req.Host)
 	if !isAIStudioProvider(req.AuthProvider) {
 		var payload AuthFilePayload
 		if len(req.StorageJSON) > 0 {

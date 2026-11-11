@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
@@ -956,6 +957,14 @@ func responsesContents(raw json.RawMessage) ([]aistudio.Content, []string, error
 			}
 			contents = append(contents, aistudio.Content{Role: role, Parts: parts})
 			continue
+		case "agent_message":
+			pendingSignature = ""
+			parts, err := agentMessageParts(item.Content)
+			if err != nil {
+				return nil, nil, fmt.Errorf("agent_message: %w", err)
+			}
+			contents = append(contents, aistudio.Content{Role: aistudio.RoleUser, Parts: parts})
+			continue
 		case "function_call":
 			call.Arguments = functionCallArguments(item.Arguments)
 			if call.ID != "" && call.Name != "" {
@@ -1069,6 +1078,30 @@ func responsesContents(raw json.RawMessage) ([]aistudio.Content, []string, error
 		pendingSignature = ""
 	}
 	return prependSystemMedia(contents, systemMedia), instructions, nil
+}
+
+// agentMessageParts 把 Codex 智能体间消息的内容转为文本片段，encrypted_content 中是本服务模型写出的消息原文
+func agentMessageParts(raw json.RawMessage) ([]aistudio.Part, error) {
+	var content []struct {
+		Type             string `json:"type"`
+		Text             string `json:"text"`
+		EncryptedContent string `json:"encrypted_content"`
+	}
+	if err := json.Unmarshal(raw, &content); err != nil {
+		return nil, err
+	}
+	parts := make([]aistudio.Part, 0, len(content))
+	for _, part := range content {
+		switch part.Type {
+		case "input_text":
+			parts = append(parts, aistudio.Part{Text: part.Text})
+		case "encrypted_content":
+			parts = append(parts, aistudio.Part{Text: part.EncryptedContent})
+		default:
+			return nil, fmt.Errorf("unsupported content type %q", part.Type)
+		}
+	}
+	return parts, nil
 }
 
 // responsesInputConfig 返回输入项中 additional_tools 提供的工具与最后一个 configuration_update 的推理强度
@@ -1768,7 +1801,7 @@ func (o *responsesOutput) annotate(message map[string]any, final bool) []any {
 // responsesStreamWriter 把规范事件写成 Responses 流；w 为空时只累积输出项，非流式响应由它生成与流式相同的 output
 type responsesStreamWriter struct {
 	w        http.ResponseWriter
-	sequence int
+	sequence atomic.Int64
 	id       string
 	created  int64
 	request  responsesRequest
@@ -1814,6 +1847,7 @@ func (s *server) streamResponses(w http.ResponseWriter, r *http.Request, request
 	if err := writer.emit("response.in_progress", map[string]any{"response": responseShell(id, created, "in_progress", request)}); err != nil {
 		return
 	}
+	stream.setFrame(writer.progressFrame)
 	_ = s.streamOutput(r.Context(), writer, prepared, events, compaction, func(err error) bool { return shouldWriteRequestError(r, err) })
 }
 
@@ -1857,6 +1891,13 @@ func (s *server) streamOutput(ctx context.Context, writer *responsesStreamWriter
 	return nil
 }
 
+// progressFrame 返回流静默时重发的 response.in_progress 帧，序号与其他事件连续递增，外壳不回显请求字段
+func (writer *responsesStreamWriter) progressFrame() string {
+	shell := responseShell(writer.id, writer.created, "in_progress", responsesRequest{Model: writer.request.Model})
+	data, _ := json.Marshal(officialOrder("responses", map[string]any{"type": "response.in_progress", "sequence_number": writer.sequence.Add(1) - 1, "response": shell}))
+	return "event: response.in_progress\ndata: " + string(data) + "\n\n"
+}
+
 func (writer *responsesStreamWriter) emit(eventType string, payload map[string]any) error {
 	if item, ok := payload["item"].(map[string]any); ok {
 		payload["item"] = responseIncludeView(item, writer.request.Include)
@@ -1865,8 +1906,7 @@ func (writer *responsesStreamWriter) emit(eventType string, payload map[string]a
 		payload["response"] = responseView(response, writer.request.Include)
 	}
 	payload["type"] = eventType
-	payload["sequence_number"] = writer.sequence
-	writer.sequence++
+	payload["sequence_number"] = writer.sequence.Add(1) - 1
 	if writer.w == nil {
 		return nil
 	}

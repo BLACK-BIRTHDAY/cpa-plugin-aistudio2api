@@ -89,6 +89,7 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 		}
 	}
 
+	upstreamMethod := inferUpstreamMethodForModel(cleanModel)
 	// Classify candidates using AIStudio2API's native AccountPool (respecting benefit tiers, model catalog, cooldowns, and active concurrency)
 	allowedAccounts := make([]string, 0, len(candidateByAccount))
 	for accID := range candidateByAccount {
@@ -96,10 +97,20 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 	}
 	selection := aistudio.AccountSelection{
 		ModelID:           cleanModel,
-		Method:            "generateContent",
+		Method:            upstreamMethod,
 		AllowedAccountIDs: allowedAccounts,
 	}
 	groups, classifyErr := rt.Pool().ClassifyCandidates(p.ctx, selection, nil)
+	if classifyErr == nil && upstreamMethod != "" {
+		total := len(groups.WarmReady) + len(groups.StandbyReady) + len(groups.WarmAvailable) + len(groups.StandbyBusy) + len(groups.WarmBusy)
+		if total == 0 && groups.EarliestCooldown.Until.IsZero() {
+			fallbackSel := selection
+			fallbackSel.Method = ""
+			if fallbackGroups, fErr := rt.Pool().ClassifyCandidates(p.ctx, fallbackSel, nil); fErr == nil {
+				groups = fallbackGroups
+			}
+		}
+	}
 
 	hostDispatched := false
 	if req.Options.Metadata != nil {
@@ -218,6 +229,20 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 		Handled:         true,
 		DelegateBuiltin: pluginapi.SchedulerBuiltinRoundRobin,
 	}, nil
+}
+
+func inferUpstreamMethodForModel(modelID string) string {
+	lower := strings.ToLower(strings.TrimSpace(modelID))
+	switch {
+	case strings.Contains(lower, "embedding"):
+		return "embedContent"
+	case strings.Contains(lower, "veo"):
+		return "predictLongRunning"
+	case strings.Contains(lower, "imagen"):
+		return "predict"
+	default:
+		return "generateContent"
+	}
 }
 
 func isAIStudioCandidate(cand pluginapi.SchedulerAuthCandidate) bool {

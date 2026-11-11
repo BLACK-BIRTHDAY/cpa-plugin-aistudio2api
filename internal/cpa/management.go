@@ -67,7 +67,7 @@ func (p *Plugin) handleCLIRun(raw []byte) (any, error) {
 			}, nil
 		}
 		_ = p.SyncAccountToHostAuth("", created)
-		out, _ := json.MarshalIndent(created, "", "  ")
+		out, _ := json.MarshalIndent(redactAdminAccount(created), "", "  ")
 		return pluginapi.CommandLineExecutionResponse{
 			ExitCode: 0,
 			Stdout:   []byte("Successfully logged in and imported AI Studio account:\n" + string(out) + "\n"),
@@ -79,7 +79,7 @@ func (p *Plugin) handleCLIRun(raw []byte) (any, error) {
 		accounts, _ := rt.Admin.Accounts(p.ctx)
 		out, _ := json.MarshalIndent(map[string]any{
 			"status":   status,
-			"accounts": accounts,
+			"accounts": redactAdminAccounts(accounts),
 		}, "", "  ")
 		return pluginapi.CommandLineExecutionResponse{
 			ExitCode: 0,
@@ -185,7 +185,7 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		if err != nil {
 			return jsonManagementResponse(http.StatusInternalServerError, map[string]any{"error": err.Error()}), nil
 		}
-		return jsonManagementResponse(http.StatusOK, map[string]any{"accounts": accounts}), nil
+		return jsonManagementResponse(http.StatusOK, map[string]any{"accounts": redactAdminAccounts(accounts)}), nil
 
 	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/login-browser":
 		if !p.chromeLogin.TryLock() {
@@ -205,15 +205,15 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		}
 		_ = p.SyncAccountToHostAuth(req.HostCallbackID, created)
 		go func() { _ = rt.EnsureRunning(p.ctx) }()
-		return jsonManagementResponse(http.StatusCreated, map[string]any{"account": created}), nil
+		return jsonManagementResponse(http.StatusCreated, map[string]any{"account": redactAdminAccount(created)}), nil
 	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/relogin":
 		if !p.chromeLogin.TryLock() {
 			return jsonManagementResponse(http.StatusConflict, map[string]any{"error": "已有一个本机 Chrome 无痕登录窗口正在进行中，请在该窗口完成登录或关闭它后重试"}), nil
 		}
 		defer p.chromeLogin.Unlock()
 		var body struct {
-			AccountID string `json:"account_id"`
-			Proxy     string `json:"proxy"`
+			AccountID string  `json:"account_id"`
+			Proxy     *string `json:"proxy,omitempty"`
 		}
 		if len(req.Body) > 0 {
 			_ = json.Unmarshal(req.Body, &body)
@@ -222,25 +222,27 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		var updated api.AdminAccount
 		var err error
 		if accountID != "" {
-			if newProxy := strings.TrimSpace(body.Proxy); newProxy != "" {
-				if existing, err := rt.Admin.Accounts(p.ctx); err == nil {
+			if body.Proxy != nil {
+				if existing, eErr := rt.Admin.Accounts(p.ctx); eErr == nil {
 					for _, acc := range existing {
-						if strings.EqualFold(acc.ID, accountID) && strings.TrimSpace(acc.Proxy) != newProxy {
-							locale := acc.Locale
-							if locale == "" {
-								locale = "en-US"
+						if strings.EqualFold(acc.ID, accountID) {
+							if resolvedProxy, changed := resolveUpdatedProxy(body.Proxy, acc.Proxy); changed {
+								locale := acc.Locale
+								if locale == "" {
+									locale = "en-US"
+								}
+								tz := acc.Timezone
+								if tz == "" {
+									tz = "America/Los_Angeles"
+								}
+								_, _ = rt.Admin.UpdateAccount(p.ctx, accountID, api.AccountInput{
+									Label:    accountID,
+									Enabled:  acc.Enabled,
+									Proxy:    resolvedProxy,
+									Locale:   locale,
+									Timezone: tz,
+								})
 							}
-							tz := acc.Timezone
-							if tz == "" {
-								tz = "America/Los_Angeles"
-							}
-							_, _ = rt.Admin.UpdateAccount(p.ctx, accountID, api.AccountInput{
-								Label:    accountID,
-								Enabled:  acc.Enabled,
-								Proxy:    newProxy,
-								Locale:   locale,
-								Timezone: tz,
-							})
 							break
 						}
 					}
@@ -248,7 +250,11 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 			}
 			updated, err = rt.Admin.LoginAccount(p.ctx, accountID, nil)
 		} else {
-			updated, err = rt.Admin.CreateAccount(p.ctx, api.AccountCreateInput{Proxy: body.Proxy}, nil)
+			proxyVal := ""
+			if body.Proxy != nil {
+				proxyVal = strings.TrimSpace(*body.Proxy)
+			}
+			updated, err = rt.Admin.CreateAccount(p.ctx, api.AccountCreateInput{Proxy: proxyVal}, nil)
 		}
 		if err != nil {
 			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
@@ -258,7 +264,7 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		}
 		_ = p.SyncAccountToHostAuth(req.HostCallbackID, updated)
 		go func() { _ = rt.EnsureRunning(p.ctx) }()
-		return jsonManagementResponse(http.StatusOK, map[string]any{"account": updated}), nil
+		return jsonManagementResponse(http.StatusOK, map[string]any{"account": redactAdminAccount(updated)}), nil
 	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/discover-cookies":
 		var input api.CookieImportInput
 		if err := json.Unmarshal(req.Body, &input); err != nil {
@@ -317,7 +323,7 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		}
 		_ = p.SyncAccountToHostAuth(req.HostCallbackID, created)
 		go func() { _ = rt.EnsureRunning(p.ctx) }()
-		return jsonManagementResponse(http.StatusCreated, map[string]any{"account": created}), nil
+		return jsonManagementResponse(http.StatusCreated, map[string]any{"account": redactAdminAccount(created)}), nil
 
 	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/refresh":
 		var body struct {
@@ -342,20 +348,22 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 
 	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/update":
 		var body struct {
-			AccountID string `json:"account_id"`
-			Enabled   bool   `json:"enabled"`
-			Proxy     string `json:"proxy"`
-			Locale    string `json:"locale"`
-			Timezone  string `json:"timezone"`
+			AccountID string  `json:"account_id"`
+			Enabled   bool    `json:"enabled"`
+			Proxy     *string `json:"proxy,omitempty"`
+			Locale    string  `json:"locale"`
+			Timezone  string  `json:"timezone"`
 		}
 		if err := json.Unmarshal(req.Body, &body); err != nil {
 			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
 		}
 		locale := strings.TrimSpace(body.Locale)
 		timezone := strings.TrimSpace(body.Timezone)
+		existingProxy := ""
 		if existing, err := rt.Admin.Accounts(p.ctx); err == nil {
 			for _, acc := range existing {
 				if strings.EqualFold(acc.ID, body.AccountID) {
+					existingProxy = acc.Proxy
 					if locale == "" {
 						locale = acc.Locale
 					}
@@ -372,10 +380,11 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		if timezone == "" {
 			timezone = "America/Los_Angeles"
 		}
+		resolvedProxy, _ := resolveUpdatedProxy(body.Proxy, existingProxy)
 		updated, err := rt.Admin.UpdateAccount(p.ctx, body.AccountID, api.AccountInput{
 			Label:    body.AccountID,
 			Enabled:  body.Enabled,
-			Proxy:    strings.TrimSpace(body.Proxy),
+			Proxy:    resolvedProxy,
 			Locale:   locale,
 			Timezone: timezone,
 		})
@@ -383,8 +392,7 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
 		}
 		_ = p.SyncAccountToHostAuth(req.HostCallbackID, updated)
-		return jsonManagementResponse(http.StatusOK, map[string]any{"account": updated}), nil
-
+		return jsonManagementResponse(http.StatusOK, map[string]any{"account": redactAdminAccount(updated)}), nil
 	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/delete":
 		var body struct {
 			AccountID string `json:"account_id"`
@@ -428,22 +436,8 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		if accountID == "" {
 			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": "请指定要清除冷却的账户邮箱 (account_id)"}), nil
 		}
-		if scope != "" {
-			if err := rt.Admin.ClearCooldown(p.ctx, accountID, scope); err != nil {
-				return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
-			}
-		} else {
-			scopes := map[string]struct{}{"*": {}}
-			for _, st := range rt.Pool().Status() {
-				if strings.EqualFold(st.ID, accountID) {
-					for k := range st.Cooldowns {
-						scopes[k] = struct{}{}
-					}
-				}
-			}
-			for sc := range scopes {
-				_ = rt.Admin.ClearCooldown(p.ctx, accountID, sc)
-			}
+		if err := rt.Admin.ClearCooldown(p.ctx, accountID, scope); err != nil {
+			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": err.Error()}), nil
 		}
 		return jsonManagementResponse(http.StatusOK, map[string]any{"cleared": true, "account_id": accountID}), nil
 	case method == http.MethodGet && path == "/v0/management/aistudio2api/models":
@@ -476,13 +470,39 @@ func redactProxyURLString(raw string) string {
 	return parsed.Redacted()
 }
 
+func redactAdminAccount(acc api.AdminAccount) api.AdminAccount {
+	acc.Proxy = redactProxyURLString(acc.Proxy)
+	acc.Egress = redactProxyURLString(acc.Egress)
+	return acc
+}
+
+func redactAdminAccounts(accounts []api.AdminAccount) []api.AdminAccount {
+	out := make([]api.AdminAccount, len(accounts))
+	for i := range accounts {
+		out[i] = redactAdminAccount(accounts[i])
+	}
+	return out
+}
+
+func resolveUpdatedProxy(newProxyPtr *string, existingProxy string) (string, bool) {
+	cur := strings.TrimSpace(existingProxy)
+	if newProxyPtr == nil {
+		return cur, false
+	}
+	candidate := strings.TrimSpace(*newProxyPtr)
+	if candidate == "" {
+		return "", cur != ""
+	}
+	if cur != "" && candidate == redactProxyURLString(cur) {
+		return cur, false
+	}
+	return candidate, candidate != cur
+}
+
 func (p *Plugin) buildStatusManagementResponse(rt *app.PluginRuntime) pluginapi.ManagementResponse {
 	status, _ := rt.Admin.Status(p.ctx)
 	accounts, _ := rt.Admin.Accounts(p.ctx)
-	for i := range accounts {
-		accounts[i].Proxy = redactProxyURLString(accounts[i].Proxy)
-		accounts[i].Egress = redactProxyURLString(accounts[i].Egress)
-	}
+	accounts = redactAdminAccounts(accounts)
 	cooldowns, _ := rt.Admin.Cooldowns(p.ctx)
 	now := time.Now()
 	seenCooldowns := make(map[string]struct{}, len(cooldowns))

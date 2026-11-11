@@ -720,6 +720,7 @@ func (service *trackedService) startModelCatalogRefresh(ctx context.Context) (<-
 	return ready, synced, done
 }
 
+// modelCatalogAccountIDs 返回读取目录的启用账户，权益高的在前，同权益按 ID 排列
 func (service *trackedService) modelCatalogAccountIDs() []string {
 	statuses := service.pool.Status()
 	accountIDs := make([]string, 0, len(statuses))
@@ -729,7 +730,7 @@ func (service *trackedService) modelCatalogAccountIDs() []string {
 		}
 	}
 	sort.Strings(accountIDs)
-	return accountIDs
+	return service.pool.ByBenefitTier(accountIDs)
 }
 
 // refreshAccountModelCatalogs 同步账户目录并按完成顺序发出结果：还没有目录的账户并发载入页面，已有目录的账户逐个载入
@@ -1793,6 +1794,8 @@ type generateRetry struct {
 	quotaRejected bool
 	// quotaFailed records whether any attempt failed due to an upstream quota or rate-limit cooldown error.
 	quotaFailed bool
+	// quotaUntil 是本次请求中因额度失败而冷却的账户最早的恢复时刻
+	quotaUntil time.Time
 }
 
 // attemptOutcome 是失败尝试处理后的错误与换号决定
@@ -1883,6 +1886,7 @@ func (service *trackedService) generateWithRetry(
 		retry.attempted = make(map[string]struct{}, retry.maxAttempts)
 		retry.quotaRejected = false
 		retry.quotaFailed = false
+		retry.quotaUntil = time.Time{}
 		retry.recoveryAccountID = ""
 		retry.buildRejection = nil
 		copyFiles = false
@@ -2078,6 +2082,12 @@ func (service *trackedService) generateWithRetry(
 			}
 			break
 		}
+		if last.recoverWorker && errors.Is(err, aistudio.ErrProtectedTransport) {
+			service.requests.logRequestProgress(request.ID, last.accountLabel, "WARN", fmt.Sprintf(
+				"受保护请求网络错误 | 模型=%s | 同账户重放当前请求\n原因: %s", modelID, strings.TrimSpace(err.Error()),
+			))
+			continue
+		}
 		if last.recoverWorker {
 			service.requests.logRequestProgress(request.ID, last.accountLabel, "WARN", fmt.Sprintf(
 				"WAA Worker 重建 | 模型=%s | 重放当前请求\n原因: %s", modelID, strings.TrimSpace(err.Error()),
@@ -2207,7 +2217,7 @@ func (service *trackedService) runAttempt(
 			UploadInlineMediaToLease(context.Context, *aistudio.AccountLease, []aistudio.Content, *aistudio.TemporaryFileCopies, bool) ([]aistudio.Content, *aistudio.TemporaryFileCopies, error)
 		}).UploadInlineMediaToLease(ctx, lease, request.Contents, attempt.copies, inlineImages)
 		if err == nil {
-			service.requests.log(accountLabel, "INFO", fmt.Sprintf(
+			service.requests.logRequestProgress(request.ID, accountLabel, "INFO", fmt.Sprintf(
 				"内联附件处理完成 | 附件=%d | 原始=%dB | 耗时=%s",
 				mediaCount, mediaBytes, time.Since(uploadStartedAt).Round(time.Millisecond),
 			))
@@ -2266,6 +2276,25 @@ func (service *trackedService) runAttempt(
 	attempt.err = err
 }
 
+// quotaCooldownError 是带恢复时刻的额度失败，恢复时刻取本次请求中额度失败账户最早的冷却恢复时刻
+type quotaCooldownError struct {
+	err   error
+	until time.Time
+}
+
+func (err *quotaCooldownError) Error() string {
+	return err.err.Error()
+}
+
+func (err *quotaCooldownError) Unwrap() error {
+	return err.err
+}
+
+// RetryAt 返回额度失败账户最早的冷却恢复时刻
+func (err *quotaCooldownError) RetryAt(time.Time) time.Time {
+	return err.until
+}
+
 // settleAttempt 处理失败的尝试：记录访问日志与冷却，释放租约，mayRecover 为真时按需重建 Worker
 func (service *trackedService) settleAttempt(
 	requestCtx context.Context,
@@ -2297,6 +2326,7 @@ func (service *trackedService) settleAttempt(
 	workerFailed := service.workers.WorkerFailed(accountID)
 	waaRuntimeFailed := aistudio.DefinitiveWAARuntimeFailure(err)
 	workerReplaced := errors.Is(err, errAccountWorkerReplaced)
+	protectedTransport := errors.Is(err, aistudio.ErrProtectedTransport) && requestCtx.Err() == nil
 	localWorkerFailure := (workerFailed || workerReplaced) && requestCtx.Err() == nil
 	retryable := retryableGenerateAccountError(requestCtx, err) || localWorkerFailure
 	if aistudio.DefinitiveAuthenticationFailure(err) {
@@ -2329,6 +2359,10 @@ func (service *trackedService) settleAttempt(
 						rpcFailure.RetryDelay = delay
 					}
 				}
+				if retry.quotaUntil.IsZero() || until.Before(retry.quotaUntil) {
+					retry.quotaUntil = until
+				}
+				err = &quotaCooldownError{err: err, until: retry.quotaUntil}
 				service.requests.logRequestProgress(requestID, accountLabel, "WARN", fmt.Sprintf(
 					"账号冷却 | 类型=%s | 范围=%s | 恢复=%s",
 					cooldown.Kind, scopeLabel, until.Local().Format(time.RFC3339),
@@ -2375,7 +2409,7 @@ func (service *trackedService) settleAttempt(
 		var resetErr error
 		recoverWorker, _, resetErr = service.recoverWorkerOnce(
 			requestCtx, accountID, attempt.workerGeneration, retry.recoveredWorker,
-			needsWAARuntimeRecovery(err, workerFailed, workerReplaced),
+			needsWAARuntimeRecovery(err, workerFailed, workerReplaced) || protectedTransport,
 			workerFailed || waaRuntimeFailed,
 		)
 		if resetErr != nil {

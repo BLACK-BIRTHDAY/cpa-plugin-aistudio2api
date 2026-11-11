@@ -242,6 +242,11 @@ func (rt *PluginRuntime) Close() error {
 	return rt.Manager.Close()
 }
 
+// ApplyLiveConfig applies updated routing, channel, capacity, hedge, and model mapping settings to an active PluginRuntime without dropping active requests or warm workers.
+func (rt *PluginRuntime) ApplyLiveConfig(cfg config.Config) {
+	rt.ApplyConfig(cfg)
+}
+
 // EnsureRunning starts the generation service if it is currently STOPPED and at least one account exists.
 func (rt *PluginRuntime) EnsureRunning(ctx context.Context) error {
 	rt.Manager.mu.RLock()

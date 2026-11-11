@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/Mag1cFall/AIStudio2API/internal/api"
 	"github.com/Mag1cFall/AIStudio2API/internal/app"
 	"github.com/Mag1cFall/AIStudio2API/internal/config"
 	"github.com/Mag1cFall/AIStudio2API/internal/pluginabi"
 	"github.com/Mag1cFall/AIStudio2API/internal/pluginapi"
-	"strings"
-	"sync"
-	"sync/atomic"
-	"time"
 )
 
 type HostCallFunc func(method string, payload []byte) ([]byte, error)
@@ -31,8 +34,10 @@ type Plugin struct {
 	accountExcluded map[string][]string
 	hostExcluded    map[string][]string
 	hostAliases     map[string][]pluginapi.ModelAlias
+	hostAuthDir     string
 	chromeLogin     sync.Mutex
 	serviceStopped  atomic.Bool
+	shuttingDown    atomic.Bool
 	lastRegisterNs  atomic.Int64
 }
 
@@ -62,7 +67,44 @@ func (p *Plugin) SetHostCall(fn HostCallFunc) {
 	p.mu.Unlock()
 }
 
+func (p *Plugin) updateHostConfig(host pluginapi.HostConfigSummary) {
+	if len(host.ExcludedModels) > 0 {
+		p.setHostExcludedModels(host.ExcludedModels)
+	}
+	if len(host.OAuthModelAlias) > 0 {
+		p.setHostModelAliases(host.OAuthModelAlias)
+	}
+	authDir := strings.TrimSpace(host.AuthDir)
+	if strings.HasPrefix(authDir, "~/") {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			authDir = filepath.Join(home, authDir[2:])
+		}
+	}
+	if authDir != "" {
+		p.excludedMu.Lock()
+		p.hostAuthDir = authDir
+		p.excludedMu.Unlock()
+	}
+}
+
+func (p *Plugin) resolveHostAuthDir() string {
+	p.excludedMu.RLock()
+	dir := p.hostAuthDir
+	p.excludedMu.RUnlock()
+	if dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return filepath.Join(home, ".cli-proxy-api")
+}
+
 func (p *Plugin) Runtime() (*app.PluginRuntime, error) {
+	if p.shuttingDown.Load() {
+		return nil, fmt.Errorf("plugin is shutting down")
+	}
 	p.mu.RLock()
 	rt := p.runtime
 	p.mu.RUnlock()
@@ -71,6 +113,9 @@ func (p *Plugin) Runtime() (*app.PluginRuntime, error) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.shuttingDown.Load() {
+		return nil, fmt.Errorf("plugin is shutting down")
+	}
 	if p.runtime != nil {
 		return p.runtime, nil
 	}
@@ -197,9 +242,13 @@ func (p *Plugin) handleRegister(raw []byte) (any, error) {
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &req)
 	}
-	if err := p.applyConfig(req.ConfigYAML); err != nil {
+	if err := p.applyConfig(req.ConfigYAML, false); err != nil {
 		return nil, err
 	}
+	return p.registrationPayload(), nil
+}
+
+func (p *Plugin) registrationPayload() rpcRegistration {
 	return rpcRegistration{
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
@@ -207,6 +256,7 @@ func (p *Plugin) handleRegister(raw []byte) (any, error) {
 			Version:          PluginVersion,
 			Author:           "jianli9158 (Upstream: Mag1cFall)",
 			GitHubRepository: "https://github.com/jianli9158/cpa-plugin-aistudio2api",
+			Logo:             "https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690345.svg",
 			ConfigFields: []pluginapi.ConfigField{
 				{
 					Name:        "waa_backend",
@@ -325,18 +375,26 @@ func (p *Plugin) handleRegister(raw []byte) (any, error) {
 			ManagementAPI:          true,
 			QuotaProvider:          true,
 		},
-	}, nil
+	}
 }
 
 func (p *Plugin) handleReload(raw []byte) (any, error) {
-	return p.handleRegister(raw)
+	var req rpcLifecycleRequest
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &req)
+	}
+	if err := p.applyConfig(req.ConfigYAML, true); err != nil {
+		return nil, err
+	}
+	return p.registrationPayload(), nil
 }
 
-func (p *Plugin) applyConfig(configYAML []byte) error {
+func (p *Plugin) applyConfig(configYAML []byte, isReload bool) error {
 	pcfg, cfg, err := ParsePluginConfig(configYAML)
 	if err != nil {
 		return err
 	}
+	p.shuttingDown.Store(false)
 	p.mu.Lock()
 	p.pluginCfg = pcfg
 	p.appCfg = cfg
@@ -355,7 +413,7 @@ func (p *Plugin) applyConfig(configYAML []byte) error {
 		rt.ApplyConfig(cfg)
 	}
 	p.mu.Unlock()
-	if boolOrDefault(pcfg.SyncAuthFiles, true) && rt != nil {
+	if boolOrDefault(pcfg.SyncAuthFiles, true) && rt != nil && !p.serviceStopped.Load() {
 		p.setHostAuthFilesDisabled(rt, false)
 	}
 	return nil
@@ -377,6 +435,7 @@ func (p *Plugin) handleQuiesce() (any, error) {
 }
 
 func (p *Plugin) handleShutdown() (any, error) {
+	p.shuttingDown.Store(true)
 	p.serviceStopped.Store(true)
 	p.mu.Lock()
 	rt := p.runtime
@@ -392,6 +451,7 @@ func (p *Plugin) handleShutdown() (any, error) {
 	clear(p.accountExcluded)
 	clear(p.hostExcluded)
 	clear(p.hostAliases)
+	p.hostAuthDir = ""
 	p.excludedMu.Unlock()
 	if syncAuth && rt != nil {
 		p.setHostAuthFilesDisabled(rt, true)

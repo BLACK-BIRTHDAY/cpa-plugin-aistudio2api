@@ -5,6 +5,8 @@ package mozjs
 #cgo CXXFLAGS: -std=c++20 -fno-rtti -fno-exceptions -DSTATIC_JS_API -DJS_STANDALONE -Wno-invalid-offsetof -Wno-attributes
 #cgo windows,amd64 CXXFLAGS: -DXP_WIN
 #cgo windows,amd64 LDFLAGS: -ljs_static -ljsrust -Wl,-Bstatic -lc++ -lunwind -Wl,-Bdynamic -lws2_32 -lwinmm -lpsapi -ldbghelp -lntdll -luserenv -lbcrypt -ladvapi32 -lshell32 -lole32 -loleaut32 -luuid -lsynchronization
+#cgo windows,arm64 CXXFLAGS: -DXP_WIN
+#cgo windows,arm64 LDFLAGS: -ljs_static -ljsrust -Wl,-Bstatic -lc++ -lunwind -Wl,-Bdynamic -lws2_32 -lwinmm -lpsapi -ldbghelp -lntdll -luserenv -lbcrypt -ladvapi32 -lshell32 -lole32 -loleaut32 -luuid -lsynchronization
 #cgo linux,amd64 CXXFLAGS: -DXP_UNIX -DXP_LINUX
 #cgo linux,amd64 LDFLAGS: -ljs_static -ljsrust -Wl,-Bstatic -lstdc++ -Wl,-Bdynamic -lm -ldl -lpthread
 #cgo linux,arm64 CXXFLAGS: -DXP_UNIX -DXP_LINUX
@@ -103,13 +105,14 @@ type Options struct {
 	Locale    string
 }
 
-// Context 是绑定到创建它的 OS 线程的 JSContext，只能在该线程上使用
+// Context 是绑定到创建它的 OS 线程的 JSContext，除 Interrupt 外只能在该线程上使用
 type Context struct {
-	mu      sync.Mutex
 	c       *C.mz_context
 	id      uintptr
 	natives []NativeFunc
-	closed  bool
+	// mu 使其他线程的 Interrupt 与销毁上下文互斥
+	mu     sync.Mutex
+	closed bool
 }
 
 var (
@@ -170,16 +173,14 @@ func Now() float64 { return float64(C.mz_now()) }
 // Close 销毁上下文
 func (cx *Context) Close() {
 	cx.mu.Lock()
+	defer cx.mu.Unlock()
 	if cx.closed {
-		cx.mu.Unlock()
 		return
 	}
 	cx.closed = true
-	handle := cx.c
-	cx.c = nil
-	cx.mu.Unlock()
 	contexts.Delete(cx.id)
-	C.mz_context_free(handle)
+	C.mz_context_free(cx.c)
+	cx.c = nil
 }
 
 // takeError 取出失败调用留下的异常
@@ -387,7 +388,7 @@ func (cx *Context) SetThrowLocation(filename string, line, column int) {
 	C.mz_set_throw_location(cx.c, cName, C.uint32_t(line), C.uint32_t(column))
 }
 
-// Interrupt 请求终止正在执行的脚本，可在任意 goroutine 调用
+// Interrupt 请求终止正在执行的脚本，可在任意 goroutine 调用，上下文已销毁时不做任何事
 func (cx *Context) Interrupt() {
 	cx.mu.Lock()
 	defer cx.mu.Unlock()

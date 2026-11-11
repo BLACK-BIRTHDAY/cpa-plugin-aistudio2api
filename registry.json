@@ -6,7 +6,7 @@
       "name": "Google AI Studio (WAA)",
       "description": "Google AI Studio WAA reverse proxy plugin with Playground & Build channels.",
       "author": "BLACK-BIRTHDAY",
-      "version": "1.2.1",
+      "version": "1.2.2",
       "repository": "https://github.com/BLACK-BIRTHDAY/cpa-plugin-aistudio2api",
       "license": "MIT",
       "tags": ["Provider", "OAuth"]

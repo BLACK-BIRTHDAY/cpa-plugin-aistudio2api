@@ -511,11 +511,6 @@ func (p *Plugin) handleExecutorHTTPRequest(raw []byte) (any, error) {
 		return nil, fmt.Errorf("decode executor.http_request: %w", err)
 	}
 
-	reqCtx, rt, err := p.prepareExecutionContext(p.ctx, req.StorageJSON, req.Metadata, req.Attributes)
-	if err != nil {
-		return nil, err
-	}
-
 	method := strings.TrimSpace(req.Method)
 	if method == "" {
 		method = http.MethodGet
@@ -527,7 +522,20 @@ func (p *Plugin) handleExecutorHTTPRequest(raw []byte) (any, error) {
 	if strings.HasPrefix(targetURL, "/") {
 		targetURL = "http://aistudio2api.local" + targetURL
 	}
+	if parsed, err := url.Parse(targetURL); err == nil {
+		if parsed.Path == "/api" || strings.HasPrefix(parsed.Path, "/api/") {
+			return pluginapi.ExecutorHTTPResponse{
+				StatusCode: http.StatusForbidden,
+				Headers:    http.Header{"Content-Type": []string{"application/json; charset=utf-8"}},
+				Body:       []byte(`{"error":{"code":"forbidden","message":"management API routes are not accessible via executor"}}`),
+			}, nil
+		}
+	}
 
+	reqCtx, rt, err := p.prepareExecutionContext(p.ctx, req.StorageJSON, req.Metadata, req.Attributes)
+	if err != nil {
+		return nil, err
+	}
 	httpReq, err := http.NewRequestWithContext(reqCtx, method, targetURL, bytes.NewReader(req.Body))
 	if err != nil {
 		return nil, err
@@ -591,6 +599,7 @@ func extractHTTPError(statusCode int, headers http.Header, body []byte) *plugina
 		msg = http.StatusText(statusCode)
 	}
 	err := pluginabi.NewError(code, msg, statusCode)
+	err.Retryable = statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError
 	if headers != nil {
 		if ra := strings.TrimSpace(headers.Get("Retry-After")); ra != "" {
 			if secs, convErr := strconv.Atoi(ra); convErr == nil && secs > 0 {
