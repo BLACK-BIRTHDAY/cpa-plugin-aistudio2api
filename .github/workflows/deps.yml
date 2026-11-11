@@ -158,12 +158,11 @@ jobs:
           export CC=${LLVM_MINGW}/bin/aarch64-w64-mingw32-clang
           export CXX=${LLVM_MINGW}/bin/aarch64-w64-mingw32-clang++
           export AR=${LLVM_MINGW}/bin/llvm-ar
-          export RANLIB=${LLVM_MINGW}/bin/llvm-ranlib
-          export NM=${LLVM_MINGW}/bin/llvm-nm
+          export RC=${LLVM_MINGW}/bin/aarch64-w64-mingw32-windres
           export STRIP=${LLVM_MINGW}/bin/llvm-strip
-          export WINDRES=${LLVM_MINGW}/bin/aarch64-w64-mingw32-windres
-          export CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER=${LLVM_MINGW}/bin/aarch64-w64-mingw32-clang
           EOF
+
+          export CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER="${LLVM_MINGW}/bin/aarch64-w64-mingw32-clang"
 
           export MOZBUILD_STATE_PATH="$RUNNER_TEMP/mozbuild"
           export MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE=none
