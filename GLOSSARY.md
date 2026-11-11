@@ -21,3 +21,21 @@ _Avoid_: `latest`-tag release, unversioned release, draft release
 **Upstream Sync Cycle**:
 A scheduled or manually dispatched reconciliation workflow that merges upstream `jianli9158/cpa-plugin-aistudio2api` changes, runs CGO build and unit test verification gates (with Agentic Conflict Resolution on failure), and chains into an In-Place Version Release.
 _Avoid_: Manual cherry-pick, blind force-merge
+
+### Stream Recovery and Tool Calling
+
+**In-Stream Continuation Recovery**:
+The mechanism that resumes a streaming generation in-place with `<partial_reply>` context when upstream terminates with `malformed_function_call`, `unexpected_tool_call`, or `malformed_response` after preamble plain text has already been committed to the client.
+_Avoid_: Client re-prompt, silent stop, dropped stream
+
+**Continuation Prefix Stripper**:
+A multi-target streaming deduplicator that holds and strips echoed introductory text across continuation rounds while preserving thought signatures and tolerating interleaved non-text events.
+_Avoid_: Dumb string trim, discarded signatures, duplicated text
+
+**Abnormal Finish Error (`*AbnormalFinishError`)**:
+An explicit protocol error surfaced when retries on `malformed_function_call`, `unexpected_tool_call`, or `malformed_response` exhaust, preventing malformed turns from falsely projecting as `stop` or `end_turn`.
+_Avoid_: Masked stop, silent completion, fake success
+
+**Forbidden Workspace Tool Interception**:
+The detection in `AssistantStreamDecoder` that halts processing of bogus remote applet tools (`run_command`, `view_file`, etc.) and triggers in-applet follow-up prompts for client function calls.
+_Avoid_: Ignored workspace steps, hanging tool waits
