@@ -125,14 +125,17 @@ jobs:
 
           rust_cfg = root / "build/moz.configure/rust.configure"
           rtext = rust_cfg.read_text(encoding="utf-8")
-          old_rust = '''            narrowed = [
-                          c for c in candidates if c.rust_target.endswith("-{}".format(suffix))
-                      ]'''
-          new_rust = '''            suffixes = ("-windows-gnu", "-windows-gnullvm") if suffix == "windows-gnu" else ("-{}".format(suffix),)
-                      narrowed = [
-                          c for c in candidates if c.rust_target.endswith(suffixes)
-                      ]'''
-          assert old_rust in rtext, "rust.configure narrowed block not found"
+          old_rust = '''def detect_rustc_target(
+              host_or_target, compiler_info, arm_target, rust_supported_targets
+          ):'''
+          new_rust = '''def detect_rustc_target(
+              host_or_target, compiler_info, arm_target, rust_supported_targets
+          ):
+              if host_or_target.kernel == "Linux" and host_or_target.cpu == "x86_64":
+                  return "x86_64-unknown-linux-gnu"
+              if host_or_target.kernel == "WINNT" and host_or_target.cpu == "aarch64" and host_or_target.abi == "mingw":
+                  return "aarch64-pc-windows-gnullvm"'''
+          assert old_rust in rtext, "rust.configure detect_rustc_target not found"
           rtext = rtext.replace(old_rust, new_rust, 1)
           rust_cfg.write_text(rtext, encoding="utf-8")
           print("Patched init.configure and rust.configure for aarch64-pc-windows-gnullvm")
