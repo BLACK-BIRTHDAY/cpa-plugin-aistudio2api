@@ -802,3 +802,81 @@ func TestPrefixedModelRouteUsesProviderWhenAvailableAndApplyConfigSyncsHedgeAndC
 		t.Fatalf("expected Handled=false when host OAuthModelAlias already registers AIStudio/gemini-4-argon, got: %+v", rHostAliasResp)
 	}
 }
+
+func TestSchedulerPickDefersToHostSessionAffinityWhenPartialPoolCooldown(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
+	_ = os.MkdirAll(filepath.Join(tmpDir, ".cli-proxy-api"), 0o700)
+	for _, email := range []string{"cooled@example.com", "healthy@example.com"} {
+		accDir := filepath.Join(tmpDir, "accounts", email)
+		_ = os.MkdirAll(accDir, 0o700)
+		_ = os.WriteFile(filepath.Join(accDir, "account.json"), []byte(`{"label":"`+email+`","enabled":true,"locale":"en-US","timezone":"Asia/Tokyo"}`), 0o600)
+		_ = os.WriteFile(filepath.Join(accDir, "storage-state.json"), []byte(`{"cookies":[{"name":"SAPISID","value":"123","domain":".google.com","path":"/","expires":-1},{"name":"__Secure-1PAPISID","value":"456","domain":".google.com","path":"/","expires":-1},{"name":"__Secure-3PAPISID","value":"789","domain":".google.com","path":"/","expires":-1}]}`), 0o600)
+	}
+
+	p := cpa.NewPlugin(nil)
+	defer func() {
+		_, _ = p.HandleMethod(pluginabi.MethodPluginShutdown, nil)
+	}()
+
+	cfgYAML := []byte("data_dir: \"" + filepath.ToSlash(tmpDir) + "\"\nwaa_backend: spidermonkey\nauto_start: false\nsync_auth_files: false\n")
+	regReq, _ := json.Marshal(map[string]any{
+		"config_yaml":    cfgYAML,
+		"schema_version": pluginabi.SchemaVersion,
+	})
+	if _, err := p.HandleMethod(pluginabi.MethodPluginRegister, regReq); err != nil {
+		t.Fatalf("plugin.register failed: %v", err)
+	}
+
+	rt, err := p.Runtime()
+	if err != nil {
+		t.Fatalf("runtime error: %v", err)
+	}
+	for _, email := range []string{"cooled@example.com", "healthy@example.com"} {
+		if err := rt.Pool().SetCatalog(email, aistudio.BenefitTierPro, []aistudio.Model{
+			{ID: "gemini-4-argon", Methods: []string{"generateContent"}, Capabilities: map[string]bool{"chat_model": true}},
+		}); err != nil {
+			t.Fatalf("SetCatalog %s failed: %v", email, err)
+		}
+	}
+
+	cooldownScope := aistudio.ChannelCooldownScope(aistudio.ChannelPlayground, "gemini-4-argon")
+	if err := rt.Pool().MarkCooldownIfGeneration("cooled@example.com", cooldownScope, 1, time.Now(), time.Now().Add(time.Hour), "quota_exhausted"); err != nil {
+		t.Fatalf("mark cooldown failed: %v", err)
+	}
+
+	// Simulate host-dispatched scheduler.pick (with SelectionIDMetadataKey set) where
+	// cooled@example.com is still passed by the host alongside healthy@example.com.
+	schedReq, _ := json.Marshal(pluginapi.SchedulerPickRequest{
+		Provider: "aistudio2api",
+		Model:    "AIStudio/gemini-4-argon",
+		Options: pluginapi.SchedulerOptions{
+			Metadata: map[string]any{
+				pluginapi.SelectionIDMetadataKey: "sel-123",
+			},
+		},
+		Candidates: []pluginapi.SchedulerAuthCandidate{
+			{
+				ID:         "aistudio2api-cooled@example.com.json",
+				Provider:   "aistudio2api",
+				Status:     "active",
+				Attributes: map[string]string{"provider": "aistudio2api", "account_id": "cooled@example.com"},
+			},
+			{
+				ID:         "aistudio2api-healthy@example.com.json",
+				Provider:   "aistudio2api",
+				Status:     "active",
+				Attributes: map[string]string{"provider": "aistudio2api", "account_id": "healthy@example.com"},
+			},
+		},
+	})
+	schedRes, err := p.HandleMethod(pluginabi.MethodSchedulerPick, schedReq)
+	if err != nil {
+		t.Fatalf("scheduler.pick failed: %v", err)
+	}
+	sResp := schedRes.(pluginapi.SchedulerPickResponse)
+	if sResp.Handled {
+		t.Fatalf("expected Handled=false when hostDispatched and >=1 candidate is eligible so host SessionAffinitySelector runs, got: %+v", sResp)
+	}
+}

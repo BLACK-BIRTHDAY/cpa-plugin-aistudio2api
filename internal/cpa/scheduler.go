@@ -129,10 +129,15 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 			}
 		}
 
-		// When all host candidates are eligible in the plugin pool too, defer to host's
-		// SessionAffinitySelector + RoundRobinSelector so multi-turn conversations stay bound
-		// to the same account while new conversations are distributed across accounts.
-		if hostDispatched && eligibleCandidateCount == len(candidateByAccount) && eligibleCandidateCount > 0 {
+		// Defer to the host's SessionAffinitySelector + RoundRobinSelector whenever
+		// hostDispatched is true and at least one candidate account is eligible in the
+		// plugin pool. Returning Handled: true with firstEligibleAuthID whenever 1-2
+		// sibling accounts are in plugin-local cooldown (eligibleCandidateCount < len)
+		// bypasses the host's SessionAffinitySelector completely! Even if the host's
+		// sticky session picks an account that is in plugin-local cooldown, the plugin
+		// treats it as a soft PreferredAccountID and seamlessly picks an eligible
+		// warm account without losing host LCP affinity for healthy sessions.
+		if hostDispatched && eligibleCandidateCount > 0 {
 			return pluginapi.SchedulerPickResponse{Handled: false}, 0, true
 		}
 
