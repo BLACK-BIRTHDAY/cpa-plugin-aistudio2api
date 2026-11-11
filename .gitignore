@@ -9,8 +9,12 @@ aistudio2api.h
 *.zip
 checksums.txt
 
-# OS / Editor files
+# OS / Editor / Local tooling files
 .DS_Store
 .idea/
 .vscode/
 *.swp
+.superpowers/
+graphify-out/
+CLAUDE.md
+.gitattributes

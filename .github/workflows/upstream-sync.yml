@@ -1,0 +1,132 @@
+name: Upstream Sync
+
+on:
+  schedule:
+    # 09:00 Beijing Time (UTC+8) -> 01:00 UTC
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+env:
+  SPIDERMONKEY_TAG: v152.0.4-aistudio2api.1
+  LIBWEBP_TAG: v1.6.0-aistudio2api.1
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  sync:
+    name: Upstream Sync & Verification
+    runs-on: ubuntu-24.04
+    outputs:
+      changed: ${{ steps.sync.outputs.changed }}
+      verified: ${{ steps.sync.outputs.verified }}
+      release_tag: ${{ steps.sync.outputs.release_tag }}
+      summary: ${{ steps.sync.outputs.summary }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Download Static Libraries (linux-amd64-gnu)
+        shell: bash
+        run: |
+          mkdir -p spidermonkey libwebp
+          curl -fsSL "https://github.com/Mag1cFall/firefox/releases/download/${SPIDERMONKEY_TAG}/spidermonkey-${SPIDERMONKEY_TAG}-linux-amd64-gnu.tar.gz" | tar -xz -C spidermonkey
+          curl -fsSL "https://github.com/Mag1cFall/libwebp/releases/download/${LIBWEBP_TAG}/libwebp-${LIBWEBP_TAG}-linux-amd64-gnu.tar.gz" | tar -xz -C libwebp
+          echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
+          echo "CGO_CPPFLAGS=-I${GITHUB_WORKSPACE}/spidermonkey/include -I${GITHUB_WORKSPACE}/libwebp/include" >> "$GITHUB_ENV"
+          echo "CGO_LDFLAGS=-L${GITHUB_WORKSPACE}/spidermonkey/lib -L${GITHUB_WORKSPACE}/libwebp/lib" >> "$GITHUB_ENV"
+
+      - name: Configure Git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Run Upstream Sync Cycle
+        id: sync
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_AGENT_BASE_URL: ${{ secrets.UPSTREAM_AGENT_BASE_URL || 'https://antigravity-manager-963915716511.asia-northeast2.run.app/v1' }}
+          UPSTREAM_AGENT_API_KEY: ${{ secrets.UPSTREAM_AGENT_API_KEY }}
+          UPSTREAM_AGENT_MODEL: ${{ secrets.UPSTREAM_AGENT_MODEL || vars.UPSTREAM_AGENT_MODEL || 'gemini-3.8-flash-high' }}
+        run: |
+          node scripts/ci-upstream-agent.mjs --sync-ci
+
+      - name: Promote and push verified changes
+        if: steps.sync.outputs.changed == 'true' && steps.sync.outputs.verified == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.sync.outputs.release_tag }}
+        run: |
+          set -e
+          git add -A
+          if ! git diff-index --quiet HEAD -- || git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+            git commit -m "chore(upstream): sync with upstream jianli9158/cpa-plugin-aistudio2api ${RELEASE_TAG}"
+          fi
+          git push origin main
+
+      - name: Quarantine failed sync attempt
+        if: always() && steps.sync.outputs.verified == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SYNC_SUMMARY: ${{ steps.sync.outputs.summary }}
+          RELEASE_TAG: ${{ steps.sync.outputs.release_tag }}
+        run: |
+          set -e
+          git add -A
+          if ! git diff-index --quiet HEAD -- || git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+            git commit -m "chore(upstream): quarantine failed Upstream Sync Cycle for run ${GITHUB_RUN_ID}" --allow-empty
+          else
+            git commit --allow-empty -m "chore(upstream): quarantine failed Upstream Sync Cycle for run ${GITHUB_RUN_ID}"
+          fi
+          SHORT_SHA=$(git rev-parse --short=7 HEAD)
+          FAILED_BRANCH="upstream-sync/failed-${SHORT_SHA}"
+          git push origin "HEAD:refs/heads/${FAILED_BRANCH}" --force
+
+          ISSUE_TITLE="Upstream Sync Failure (${SHORT_SHA})"
+          ISSUE_BODY="Automated Upstream Convergence failed verification in run #${GITHUB_RUN_ID}.
+
+          **Upstream Release:** \`${RELEASE_TAG:-unknown}\`
+          **Quarantine Sync Branch:** \`$FAILED_BRANCH\`
+          **Run ID:** \`$GITHUB_RUN_ID\`
+
+          ### Diagnostic Summary
+          ${SYNC_SUMMARY:-No summary provided.}
+
+          Please inspect the Quarantine Sync Branch, resolve the remaining issues, and promote to \`main\`."
+
+          EXISTING_ISSUE=$(gh issue list --state open --search "Upstream Sync Failure in:title" --json number --jq '.[0].number // empty' || true)
+          if [ -n "$EXISTING_ISSUE" ]; then
+            gh issue edit "$EXISTING_ISSUE" --title "$ISSUE_TITLE" --body "$ISSUE_BODY"
+            gh issue comment "$EXISTING_ISSUE" --body "$ISSUE_BODY"
+          else
+            gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY"
+          fi
+
+          echo "::error::Upstream convergence failed verification. Quarantined in $FAILED_BRANCH."
+          exit 1
+
+  publish:
+    name: Build & Publish Plugin Release
+    needs: sync
+    if: needs.sync.outputs.changed == 'true' && needs.sync.outputs.verified == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      ref: main
+    secrets: inherit
