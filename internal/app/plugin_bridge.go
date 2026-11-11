@@ -12,6 +12,7 @@ import (
 )
 
 type pinnedAccountContextKey struct{}
+type preferredAccountContextKey struct{}
 
 // WithPinnedAccountID attaches a specific AI Studio account ID (email) to the request context.
 func WithPinnedAccountID(ctx context.Context, accountID string) context.Context {
@@ -36,6 +37,32 @@ func PinnedAccountIDFromContext(ctx context.Context) string {
 		return ""
 	}
 	v, _ := ctx.Value(pinnedAccountContextKey{}).(string)
+	return strings.ToLower(strings.TrimSpace(v))
+}
+
+// WithPreferredAccountID attaches a soft preferred AI Studio account ID (email) to the request context.
+func WithPreferredAccountID(ctx context.Context, accountID string) context.Context {
+	accountID = strings.ToLower(strings.TrimSpace(accountID))
+	if accountID == "" {
+		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, preferredAccountContextKey{}, accountID)
+}
+
+// ContextWithPreferredAccountID is an alias for WithPreferredAccountID.
+func ContextWithPreferredAccountID(ctx context.Context, accountID string) context.Context {
+	return WithPreferredAccountID(ctx, accountID)
+}
+
+// PreferredAccountIDFromContext returns the soft preferred account ID from context when set.
+func PreferredAccountIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	v, _ := ctx.Value(preferredAccountContextKey{}).(string)
 	return strings.ToLower(strings.TrimSpace(v))
 }
 

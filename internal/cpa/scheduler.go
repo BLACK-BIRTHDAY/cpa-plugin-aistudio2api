@@ -91,50 +91,89 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 
 	upstreamMethod := inferUpstreamMethodForModel(cleanModel)
 	// Classify candidates using AIStudio2API's native AccountPool (respecting benefit tiers, model catalog, cooldowns, and active concurrency)
-	groups, classifyErr := rt.Pool().ClassifyCandidates(p.ctx, aistudio.AccountSelection{
-		ModelID: cleanModel,
-		Method:  upstreamMethod,
-	}, nil)
+	allowedAccounts := make([]string, 0, len(candidateByAccount))
+	for accID := range candidateByAccount {
+		allowedAccounts = append(allowedAccounts, accID)
+	}
+	selection := aistudio.AccountSelection{
+		ModelID:           cleanModel,
+		Method:            upstreamMethod,
+		AllowedAccountIDs: allowedAccounts,
+	}
+	groups, classifyErr := rt.Pool().ClassifyCandidates(p.ctx, selection, nil)
 	if classifyErr == nil && upstreamMethod != "" {
 		total := len(groups.WarmReady) + len(groups.StandbyReady) + len(groups.WarmAvailable) + len(groups.StandbyBusy) + len(groups.WarmBusy)
 		if total == 0 && groups.EarliestCooldown.Until.IsZero() {
-			if fallbackGroups, fErr := rt.Pool().ClassifyCandidates(p.ctx, aistudio.AccountSelection{
-				ModelID: cleanModel,
-			}, nil); fErr == nil {
+			fallbackSel := selection
+			fallbackSel.Method = ""
+			if fallbackGroups, fErr := rt.Pool().ClassifyCandidates(p.ctx, fallbackSel, nil); fErr == nil {
 				groups = fallbackGroups
 			}
 		}
 	}
-	if classifyErr == nil {
-		orderedTiers := [][]string{
-			groups.WarmReady,
-			groups.StandbyReady,
-			groups.WarmAvailable,
-			groups.StandbyBusy,
-			groups.WarmBusy,
+
+	hostDispatched := false
+	if req.Options.Metadata != nil {
+		if selID, ok := req.Options.Metadata[pluginapi.SelectionIDMetadataKey].(string); ok && strings.TrimSpace(selID) != "" {
+			hostDispatched = true
 		}
+	}
+
+	pickFromClassifiedGroups := func(g aistudio.AccountCandidateGroups) (pluginapi.SchedulerPickResponse, int, bool) {
+		orderedTiers := [][]string{
+			g.WarmReady,
+			g.StandbyReady,
+			g.WarmAvailable,
+			g.StandbyBusy,
+			g.WarmBusy,
+		}
+		var firstEligibleAuthID string
+		eligibleCandidateCount := 0
 		for _, tier := range orderedTiers {
 			for _, accID := range tier {
 				if authID, ok := candidateByAccount[strings.ToLower(strings.TrimSpace(accID))]; ok && authID != "" {
-					return pluginapi.SchedulerPickResponse{
-						Handled: true,
-						AuthID:  authID,
-					}, nil
+					if firstEligibleAuthID == "" {
+						firstEligibleAuthID = authID
+					}
+					eligibleCandidateCount++
 				}
 			}
 		}
 
+		// Defer to the host's SessionAffinitySelector + RoundRobinSelector whenever
+		// hostDispatched is true and at least one candidate account is eligible in the
+		// plugin pool. Returning Handled: true whenever sibling accounts are cooling
+		// bypasses host session affinity completely; if the sticky session lands on a
+		// cooling account, the executor fast-fails with 429 so the host can rebind cleanly.
+		if hostDispatched && eligibleCandidateCount > 0 {
+			return pluginapi.SchedulerPickResponse{Handled: false}, eligibleCandidateCount, true
+		}
+
+		if firstEligibleAuthID != "" {
+			return pluginapi.SchedulerPickResponse{
+				Handled: true,
+				AuthID:  firstEligibleAuthID,
+			}, eligibleCandidateCount, true
+		}
+
 		// If a generic pool auth file exists and at least one pool account is eligible, pick it
-		totalEligible := len(groups.WarmReady) + len(groups.StandbyReady) + len(groups.WarmAvailable) + len(groups.StandbyBusy) + len(groups.WarmBusy)
+		totalEligible := len(g.WarmReady) + len(g.StandbyReady) + len(g.WarmAvailable) + len(g.StandbyBusy) + len(g.WarmBusy)
 		if totalEligible > 0 && poolFallbackCandidateID != "" {
+			if hostDispatched && len(candidateByAccount) == 0 {
+				return pluginapi.SchedulerPickResponse{Handled: false}, totalEligible, true
+			}
 			return pluginapi.SchedulerPickResponse{
 				Handled: true,
 				AuthID:  poolFallbackCandidateID,
-			}, nil
+			}, totalEligible, true
 		}
+		return pluginapi.SchedulerPickResponse{}, totalEligible, false
+	}
 
-		// If all accounts in the pool are cooling down for this model and cooldown exceeds 60s, report 429 cooldown
-		if totalEligible == 0 && !groups.EarliestCooldown.Until.IsZero() && time.Until(groups.EarliestCooldown.Until) > time.Minute {
+	if classifyErr == nil {
+		if resp, _, matched := pickFromClassifiedGroups(groups); matched {
+			return resp, nil
+		} else if !groups.EarliestCooldown.Until.IsZero() && time.Until(groups.EarliestCooldown.Until) > 0 {
 			return pluginapi.SchedulerPickResponse{
 				Handled:      true,
 				Reject:       true,
@@ -142,6 +181,10 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 				RejectReason: fmt.Sprintf("all AI Studio accounts for model %s are cooling down until %s (%s)", cleanModel, groups.EarliestCooldown.Until.Format(time.RFC3339), groups.EarliestCooldown.Reason),
 			}, nil
 		}
+	}
+
+	if hostDispatched {
+		return pluginapi.SchedulerPickResponse{Handled: false}, nil
 	}
 
 	// Fallback: match any ready/busy account from Pool.Status()

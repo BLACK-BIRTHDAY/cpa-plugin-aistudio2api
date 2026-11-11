@@ -552,3 +552,63 @@ func (p *AccountPool) AccountChannelAvailable(accountID string, selection Accoun
 	_, cooling := p.accountChannelCooldownLocked(account, selection, time.Now())
 	return !cooling
 }
+
+// PreferredAccountCoolingStatus 检查首选账户在可选通道上是否全部冷却，并判断池内是否仍有其他未冷却的可用账户
+func (p *AccountPool) PreferredAccountCoolingStatus(ctx context.Context, accountID string, selection AccountSelection) (cooling CooldownState, preferredCooling bool, otherAvailable bool) {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return CooldownState{}, false, false
+	}
+	selection = p.scopedSelection(ctx, selection)
+	selection.ModelID = strings.TrimPrefix(strings.TrimSpace(selection.ModelID), "models/")
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	target := p.byID[accountID]
+	if target == nil || !target.Config.Enabled || target.State != AccountReady || !p.accountSupportsAnyChannelLocked(target, selection) {
+		return CooldownState{}, false, false
+	}
+
+	now := time.Now()
+	cooldown, isCooling := p.accountChannelCooldownLocked(target, selection, now)
+	if !isCooling {
+		return CooldownState{}, false, false
+	}
+
+	preferredCooling = true
+	cooling = cooldown
+
+	var allowed map[string]struct{}
+	if selection.AllowedAccountIDs != nil {
+		allowed = make(map[string]struct{}, len(selection.AllowedAccountIDs))
+		for _, id := range selection.AllowedAccountIDs {
+			if id = strings.TrimSpace(id); id != "" {
+				allowed[id] = struct{}{}
+			}
+		}
+	}
+
+	for _, other := range p.accounts {
+		if other.ID == target.ID {
+			continue
+		}
+		if !other.Config.Enabled || other.State != AccountReady {
+			continue
+		}
+		if allowed != nil {
+			if _, exists := allowed[other.ID]; !exists {
+				continue
+			}
+		}
+		if !p.accountSupportsAnyChannelLocked(other, selection) {
+			continue
+		}
+		if _, otherCooling := p.accountChannelCooldownLocked(other, selection, now); !otherCooling {
+			otherAvailable = true
+			break
+		}
+	}
+
+	return cooling, preferredCooling, otherAvailable
+}

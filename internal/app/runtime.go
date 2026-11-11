@@ -1378,6 +1378,13 @@ func (service *trackedService) acquireWarmLease(ctx context.Context, selection a
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		preferred := strings.TrimSpace(selection.PreferredAccountID)
+		preferredUsable := preferred != ""
+		if preferredUsable {
+			if _, failed := failedWorkers[preferred]; failed {
+				preferredUsable = false
+			}
+		}
 		warm := service.workers.ReadyWarmAccountIDs()
 		active := service.workers.WarmAccountIDs()
 		groups, err := service.pool.ClassifyCandidates(ctx, selection, warm)
@@ -1395,10 +1402,20 @@ func (service *trackedService) acquireWarmLease(ctx context.Context, selection a
 		runtimeBusyErr := errors.Join(readyBusyErr, standbyBusyErr)
 		candidates := len(groups.WarmReady) + len(groups.WarmAvailable) + len(groups.WarmBusy) +
 			len(groups.StandbyReady) + len(groups.StandbyBusy)
+		rawStandbyReady := groups.StandbyReady
 		standbyReady, opening := service.workers.withoutOpening(groups.StandbyReady)
 		groups.StandbyReady = standbyReady
+		preferredOpening := preferredUsable && slices.Contains(rawStandbyReady, preferred) && !slices.Contains(standbyReady, preferred)
+		preferredStandby := preferredUsable && slices.Contains(standbyReady, preferred)
+		canPromotePreferred := preferredStandby && (len(active) < service.workers.activeLimit() || service.workers.idleWarmVictimFor(preferred, selection.ModelID, false) != "")
+		if preferredOpening {
+			if err := wait(schedulingRecheck); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		warmAvailable := append(append([]string(nil), groups.WarmReady...), groups.WarmAvailable...)
-		if len(warmAvailable) > 0 {
+		if len(warmAvailable) > 0 && !canPromotePreferred {
 			candidate := selection
 			candidate.AllowedAccountIDs = warmAvailable
 			lease, _, acquireErr := service.pool.TryAcquireFor(ctx, candidate)
@@ -1418,7 +1435,7 @@ func (service *trackedService) acquireWarmLease(ctx context.Context, selection a
 		warmCandidates := len(warmAvailable) + len(groups.WarmBusy)
 		coolingVictim := len(active) >= service.workers.activeLimit() &&
 			service.workers.idleWarmVictimFor("", selection.ModelID, true) != ""
-		if len(groups.StandbyReady) > 0 && (len(active) < service.workers.activeLimit() || coolingVictim) && warmCandidates > 0 && !fixedAccount {
+		if len(groups.StandbyReady) > 0 && (len(active) < service.workers.activeLimit() || coolingVictim) && warmCandidates > 0 && !fixedAccount && !canPromotePreferred {
 			standby := groups.StandbyReady
 			if cold := service.workers.coldAccounts(standby); len(cold) > 0 {
 				standby = cold
@@ -1429,15 +1446,20 @@ func (service *trackedService) acquireWarmLease(ctx context.Context, selection a
 			}
 			continue
 		}
-		if len(groups.StandbyReady) > 0 && (len(active) < service.workers.activeLimit() ||
+		if len(groups.StandbyReady) > 0 && (canPromotePreferred || len(active) < service.workers.activeLimit() ||
 			warmCandidates == 0 && service.workers.idleWarmVictim("") != "") {
 			standby := groups.StandbyReady
-			if len(active) < service.workers.activeLimit() {
-				if cold := service.workers.coldAccounts(standby); len(cold) > 0 {
-					standby = cold
+			accountID := ""
+			if canPromotePreferred {
+				accountID = preferred
+			} else {
+				if len(active) < service.workers.activeLimit() {
+					if cold := service.workers.coldAccounts(standby); len(cold) > 0 {
+						standby = cold
+					}
 				}
+				accountID = standby[0]
 			}
-			accountID := standby[0]
 			candidate := selection
 			candidate.AccountID = accountID
 			lease, _, acquireErr := service.pool.TryAcquireFor(ctx, candidate)
@@ -1488,6 +1510,9 @@ func (service *trackedService) acquireWarmLease(ctx context.Context, selection a
 			continue
 		}
 		if !groups.EarliestCooldown.Until.IsZero() {
+			if fixedAccount {
+				return nil, &aistudio.AllCoolingError{ModelID: selection.ModelID, Until: groups.EarliestCooldown.Until, Reason: groups.EarliestCooldown.Reason}
+			}
 			remaining := time.Until(groups.EarliestCooldown.Until)
 			if remaining > cooldownQueueLimit {
 				if quotaFallback && !selection.IgnoreQuotaCooldown {
@@ -1793,11 +1818,39 @@ func (service *trackedService) generateWithRetry(
 	}
 	retry.attempted = make(map[string]struct{}, retry.maxAttempts)
 	assistant := service.pool.AssistantModel(modelID)
+	hostPreferredAccountID := PreferredAccountIDFromContext(requestCtx)
 	preferredAccountID := ""
 	if assistant {
-		preferredAccountID = service.service.(aistudio.AssistantService).AssistantAccount(requestCtx, request)
+		if assistantSvc, ok := service.service.(aistudio.AssistantService); ok {
+			preferredAccountID = assistantSvc.AssistantAccount(requestCtx, request)
+		}
+		if preferredAccountID == "" {
+			preferredAccountID = hostPreferredAccountID
+		}
 	} else {
 		preferredAccountID = service.pool.InlineMediaAccount(request.Contents)
+		if preferredAccountID == "" {
+			preferredAccountID = hostPreferredAccountID
+		}
+	}
+	hostPreferredActive := func() bool {
+		return requestedAccountID == "" && resourceID == "" && hostPreferredAccountID != "" && preferredAccountID == hostPreferredAccountID
+	}
+	preferredCoolingError := func(sel aistudio.AccountSelection, targetModel string) error {
+		if !hostPreferredActive() || sel.IgnoreQuotaCooldown {
+			return nil
+		}
+		sel.AllowedAccountIDs = nil
+		cooling, prefCooling, otherAvail := service.pool.PreferredAccountCoolingStatus(requestCtx, preferredAccountID, sel)
+		if prefCooling && !otherAvail && sel.Channel == aistudio.ChannelBuild && !aistudio.RequestBuildOnly(request) {
+			fallbackSel := sel
+			fallbackSel.Channel = ""
+			cooling, prefCooling, otherAvail = service.pool.PreferredAccountCoolingStatus(requestCtx, preferredAccountID, fallbackSel)
+		}
+		if prefCooling && otherAvail {
+			return &aistudio.AllCoolingError{ModelID: targetModel, Until: cooling.Until, Reason: cooling.Reason}
+		}
+		return nil
 	}
 	hedgeable := !request.Background && !assistant && !service.pool.InteractionAgentModel(modelID) && (service.hedgeAuto || service.hedgeAfter > 0) && slices.Contains(service.hedgeModels, modelID)
 	hedged := false
@@ -1848,6 +1901,10 @@ func (service *trackedService) generateWithRetry(
 			selection.PreferredChannel = ""
 			fallbackReason = "Build 拒绝请求参数"
 		}
+		if coolingErr := preferredCoolingError(selection, modelID); coolingErr != nil {
+			err = coolingErr
+			break
+		}
 		if (unbound || fileBound) && len(retry.attempted) > 0 {
 			enabled, _ := service.pool.EnabledAccounts()
 			for _, accountID := range enabled {
@@ -1862,7 +1919,7 @@ func (service *trackedService) generateWithRetry(
 				"排队等待 | 已等待=%s | 模型=%s", waited, modelID,
 			))
 		})
-		quotaFallback := !retry.quotaRejected && selection.ResourceID == ""
+		quotaFallback := !retry.quotaRejected && selection.ResourceID == "" && requestedAccountID == ""
 		lease, acquireErr := service.acquireWarmLease(requestCtx, selection, quotaFallback)
 		var buildCooling *aistudio.AllCoolingError
 		if acquireErr != nil && selection.Channel == aistudio.ChannelBuild && requestCtx.Err() == nil && !aistudio.RequestBuildOnly(request) &&
@@ -1911,8 +1968,8 @@ func (service *trackedService) generateWithRetry(
 		var plan *hedgePlan
 		if hedgeable && !hedged {
 			if delay, ok := service.hedgeDelay(modelID, string(lease.Channel())); ok {
-				fixed := resourceID != "" || requestedAccountID != ""
-				plan = &hedgePlan{delay: delay, selections: service.hedgeSelections(selection, lease.Account().ID, fixed, retry.attempted)}
+				preferSameOnly := resourceID != "" || requestedAccountID != "" || strings.TrimSpace(selection.PreferredAccountID) != ""
+				plan = &hedgePlan{delay: delay, selections: service.hedgeSelections(selection, lease.Account().ID, preferSameOnly, retry.attempted)}
 				plan.start = func(hedgeLease *aistudio.AccountLease, hedgeSelection aistudio.AccountSelection) *generateAttempt {
 					hedged = true
 					retry.attempted[hedgeLease.Account().ID] = struct{}{}
@@ -2246,6 +2303,12 @@ func (service *trackedService) settleAttempt(
 			retryable = false
 		} else {
 			if !until.IsZero() {
+				var rpcFailure *aistudio.RPCError
+				if errors.As(err, &rpcFailure) {
+					if delay := time.Until(until); delay > rpcFailure.RetryDelay {
+						rpcFailure.RetryDelay = delay
+					}
+				}
 				if retry.quotaUntil.IsZero() || until.Before(retry.quotaUntil) {
 					retry.quotaUntil = until
 				}
