@@ -151,8 +151,6 @@ jobs:
           ac_add_options --disable-js-shell
           ac_add_options --disable-tests
           ac_add_options --disable-jemalloc
-          ac_add_options --without-system-zlib
-          ac_add_options --with-intl-api
           export HOST_CC=/usr/bin/clang
           export HOST_CXX=/usr/bin/clang++
           export CC=${LLVM_MINGW}/bin/aarch64-w64-mingw32-clang
