@@ -152,7 +152,13 @@ jobs:
           assert old_icache in vtext, "MozCpu-vixl.cpp FlushInstructionCache guard not found"
           vtext = vtext.replace(old_icache, new_icache, 1)
           vixl_cpu.write_text(vtext, encoding="utf-8")
-          print("Patched init.configure, rust.configure, and MozCpu-vixl.cpp for Windows ARM64")
+          js_mozbuild = root / "js/src/moz.build"
+          mbtext = js_mozbuild.read_text(encoding="utf-8")
+          old_mb = 'if not CONFIG["JS_DISABLE_SHELL"]:\n    DIRS += [\n        "rust",\n        "shell",\n    ]'
+          new_mb = 'DIRS += ["rust"]\nif not CONFIG["JS_DISABLE_SHELL"]:\n    DIRS += [\n        "shell",\n    ]'
+          assert old_mb in mbtext, "js/src/moz.build DIRS block not found"
+          js_mozbuild.write_text(mbtext.replace(old_mb, new_mb, 1), encoding="utf-8")
+          print("Patched init.configure, rust.configure, MozCpu-vixl.cpp, and js/src/moz.build for Windows ARM64")
           PY
 
           OBJDIR="$RUNNER_TEMP/sm-obj"
