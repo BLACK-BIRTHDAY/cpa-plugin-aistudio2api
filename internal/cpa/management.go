@@ -187,7 +187,6 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		}
 		return jsonManagementResponse(http.StatusOK, map[string]any{"accounts": redactAdminAccounts(accounts)}), nil
 
-
 	case method == http.MethodPost && path == "/v0/management/aistudio2api/accounts/login-browser":
 		if !p.chromeLogin.TryLock() {
 			return jsonManagementResponse(http.StatusConflict, map[string]any{"error": "已有一个本机 Chrome 无痕登录窗口正在进行中，请在该窗口完成登录或关闭它后重试"}), nil

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 	"github.com/Mag1cFall/AIStudio2API/internal/cpa"
@@ -232,6 +233,7 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 func TestAuthFileDisabledSyncOnServiceStopAndShutdown(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
 	authDir := filepath.Join(tmpHome, ".cli-proxy-api")
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatalf("mkdir authDir: %v", err)
@@ -264,7 +266,7 @@ func TestAuthFileDisabledSyncOnServiceStopAndShutdown(t *testing.T) {
 		_, _ = p.HandleMethod(pluginabi.MethodPluginShutdown, []byte(`{}`))
 	}()
 
-	cfgYAML := []byte("data_dir: \"" + dataDir + "\"\nwaa_backend: spidermonkey\nauto_start: false\nsync_auth_files: true\n")
+	cfgYAML := []byte("data_dir: \"" + filepath.ToSlash(dataDir) + "\"\nwaa_backend: spidermonkey\nauto_start: false\nsync_auth_files: true\n")
 	regReq, _ := json.Marshal(map[string]any{
 		"config_yaml":    cfgYAML,
 		"schema_version": pluginabi.SchemaVersion,
@@ -273,7 +275,7 @@ func TestAuthFileDisabledSyncOnServiceStopAndShutdown(t *testing.T) {
 		t.Fatalf("plugin.register failed: %v", err)
 	}
 	// Simulate auto_start=true runtime state for startup sync test
-	cfgYAMLAuto := []byte("data_dir: \"" + dataDir + "\"\nwaa_backend: spidermonkey\nauto_start: true\nsync_auth_files: true\n")
+	cfgYAMLAuto := []byte("data_dir: \"" + filepath.ToSlash(dataDir) + "\"\nwaa_backend: spidermonkey\nauto_start: true\nsync_auth_files: true\n")
 	regReqAuto, _ := json.Marshal(map[string]any{
 		"config_yaml":    cfgYAMLAuto,
 		"schema_version": pluginabi.SchemaVersion,
@@ -520,7 +522,7 @@ func TestProxyPasswordPreservationExecutorGuardAndCustomAuthDir(t *testing.T) {
 		_, _ = p.HandleMethod(pluginabi.MethodPluginShutdown, []byte(`{}`))
 	}()
 
-	cfgYAML := []byte("data_dir: \"" + dataDir + "\"\nwaa_backend: spidermonkey\nauto_start: false\nsync_auth_files: true\n")
+	cfgYAML := []byte("data_dir: \"" + filepath.ToSlash(dataDir) + "\"\nwaa_backend: spidermonkey\nauto_start: false\nsync_auth_files: true\n")
 	regReq, _ := json.Marshal(map[string]any{
 		"config_yaml":    cfgYAML,
 		"schema_version": pluginabi.SchemaVersion,
@@ -618,7 +620,7 @@ func TestProxyPasswordPreservationExecutorGuardAndCustomAuthDir(t *testing.T) {
 	}
 
 	// 5. Verify live reload updates model_aliases and routing_strategy on existing runtime
-	reloadYAML := []byte("data_dir: \"" + dataDir + "\"\nwaa_backend: spidermonkey\nauto_start: false\nsync_auth_files: true\nrouting_strategy: fill-first\nmodel_aliases: \"live-alias=gemini-3.8-flash\"\n")
+	reloadYAML := []byte("data_dir: \"" + filepath.ToSlash(dataDir) + "\"\nwaa_backend: spidermonkey\nauto_start: false\nsync_auth_files: true\nrouting_strategy: fill-first\nmodel_aliases: \"live-alias=gemini-3.8-flash\"\n")
 	reloadReq, _ := json.Marshal(map[string]any{
 		"config_yaml":    reloadYAML,
 		"schema_version": pluginabi.SchemaVersion,
@@ -634,5 +636,225 @@ func TestProxyPasswordPreservationExecutorGuardAndCustomAuthDir(t *testing.T) {
 	liveRoute := routeLiveRes.(pluginapi.ModelRouteResponse)
 	if !liveRoute.Handled || liveRoute.TargetModel != "gemini-3.8-flash" {
 		t.Fatalf("expected live-alias routed to gemini-3.8-flash after reconfigure, got %+v", liveRoute)
+	}
+}
+
+func TestPrefixedModelRouteUsesProviderWhenAvailableAndApplyLiveConfigSyncsHedgeAndCapacity(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
+	t.Setenv("AISTUDIO2API_DATA_DIR", tmpDir)
+
+	p := cpa.NewPlugin(nil)
+	defer func() {
+		_, _ = p.HandleMethod(pluginabi.MethodPluginShutdown, nil)
+	}()
+
+	// 1. Calls p.Runtime() BEFORE plugin.register / plugin.reconfigure
+	rt, err := p.Runtime()
+	if err != nil {
+		t.Fatalf("p.Runtime() before register/reconfigure failed: %v", err)
+	}
+
+	initialAuto, initialAfter, _ := rt.HedgeSettings()
+	if !initialAuto || initialAfter != 0 {
+		t.Fatalf("expected initial default hedgeAuto=true, hedgeAfter=0, got auto=%v after=%v", initialAuto, initialAfter)
+	}
+	if initialTarget := rt.WarmWorkerTarget(); initialTarget != 2 {
+		t.Fatalf("expected initial default WarmWorkerTarget=2, got %d", initialTarget)
+	}
+
+	// 2. Calls plugin.reconfigure with updated hedge (including duration suffix) and capacity settings
+	reconfYAML := []byte("data_dir: \"" + filepath.ToSlash(tmpDir) + "\"\nwaa_backend: spidermonkey\nauto_start: false\nmodel_prefix: \"AIStudio/\"\nfirst_event_hedge: \"6s\"\nfirst_event_hedge_models: \"gemini-4-argon,gemini-3.8-flash\"\nwarm_workers: 7\nmax_active_workers: 7\nper_account_concurrency: 3\n")
+	reconfReq, _ := json.Marshal(map[string]any{
+		"config_yaml":    reconfYAML,
+		"schema_version": pluginabi.SchemaVersion,
+	})
+	if _, err := p.HandleMethod(pluginabi.MethodPluginReconfigure, reconfReq); err != nil {
+		t.Fatalf("plugin.reconfigure failed: %v", err)
+	}
+
+	// 3. Verifies rt.HedgeSettings() and rt.WarmWorkerTarget()
+	hedgeAuto, hedgeAfter, hedgeModels := rt.HedgeSettings()
+	if hedgeAuto {
+		t.Fatalf("expected hedgeAuto=false after reconfigure, got true")
+	}
+	if hedgeAfter != 6*time.Second {
+		t.Fatalf("expected hedgeAfter=6s after reconfigure, got %v", hedgeAfter)
+	}
+	hasArgon := false
+	hasFlash := false
+	for _, m := range hedgeModels {
+		if m == "gemini-4-argon" {
+			hasArgon = true
+		}
+		if m == "gemini-3.8-flash" {
+			hasFlash = true
+		}
+	}
+	if !hasArgon || !hasFlash {
+		t.Fatalf("expected hedgeModels to contain gemini-4-argon and gemini-3.8-flash, got: %v", hedgeModels)
+	}
+
+	if target := rt.WarmWorkerTarget(); target != 7 {
+		t.Fatalf("expected WarmWorkerTarget=7 after reconfigure, got %d", target)
+	}
+
+	// 4. Verifies model.route for "AIStudio/gemini-4-argon" with AvailableProviders: []string{"aistudio2api"}
+	routeWithProviderReq, _ := json.Marshal(pluginapi.ModelRouteRequest{
+		RequestedModel:     "AIStudio/gemini-4-argon",
+		AvailableProviders: []string{"aistudio2api"},
+		Body:               []byte(`{"model":"AIStudio/gemini-4-argon","messages":[{"role":"user","content":"hi"}]}`),
+	})
+	routeRes, err := p.HandleMethod(pluginabi.MethodModelRoute, routeWithProviderReq)
+	if err != nil {
+		t.Fatalf("model.route with provider failed: %v", err)
+	}
+	rResp, ok := routeRes.(pluginapi.ModelRouteResponse)
+	if !ok {
+		t.Fatalf("expected ModelRouteResponse, got %#v", routeRes)
+	}
+	if !rResp.Handled {
+		t.Fatalf("expected model.route with provider Handled=true, got: %+v", rResp)
+	}
+	if rResp.TargetKind != pluginapi.ModelRouteTargetProvider {
+		t.Fatalf("expected TargetKind=%v, got %v", pluginapi.ModelRouteTargetProvider, rResp.TargetKind)
+	}
+	if rResp.Target != "aistudio2api" {
+		t.Fatalf("expected Target=aistudio2api, got %q", rResp.Target)
+	}
+	if rResp.TargetModel != "gemini-4-argon" {
+		t.Fatalf("expected TargetModel=gemini-4-argon, got %q", rResp.TargetModel)
+	}
+
+	// 5. Verifies model.route for "AIStudio/gemini-4-argon" with AvailableProviders: nil
+	routeWithoutProviderReq, _ := json.Marshal(pluginapi.ModelRouteRequest{
+		RequestedModel:     "AIStudio/gemini-4-argon",
+		AvailableProviders: nil,
+		Body:               []byte(`{"model":"AIStudio/gemini-4-argon","messages":[{"role":"user","content":"hi"}]}`),
+	})
+	routeNoRes, err := p.HandleMethod(pluginabi.MethodModelRoute, routeWithoutProviderReq)
+	if err != nil {
+		t.Fatalf("model.route without provider failed: %v", err)
+	}
+	rNoResp, ok := routeNoRes.(pluginapi.ModelRouteResponse)
+	if !ok {
+		t.Fatalf("expected ModelRouteResponse, got %#v", routeNoRes)
+	}
+	if !rNoResp.Handled {
+		t.Fatalf("expected model.route without provider Handled=true, got: %+v", rNoResp)
+	}
+	if rNoResp.TargetKind != pluginapi.ModelRouteTargetSelf {
+		t.Fatalf("expected TargetKind=%v, got %v", pluginapi.ModelRouteTargetSelf, rNoResp.TargetKind)
+	}
+	if rNoResp.Target != "aistudio2api" {
+		t.Fatalf("expected Target=aistudio2api, got %q", rNoResp.Target)
+	}
+	if rNoResp.TargetModel != "gemini-4-argon" {
+		t.Fatalf("expected TargetModel=gemini-4-argon, got %q", rNoResp.TargetModel)
+	}
+
+	// 6. When host oauth.model-alias already defines alias "AIStudio/gemini-4-argon" -> "gemini-4-argon",
+	// model.route returns Handled=false so the host matches the registered alias directly without 503.
+	staticReqWithAlias, _ := json.Marshal(pluginapi.StaticModelRequest{
+		Host: pluginapi.HostConfigSummary{
+			OAuthModelAlias: map[string][]pluginapi.ModelAlias{
+				"aistudio2api": {
+					{Name: "gemini-4-argon", Alias: "AIStudio/gemini-4-argon"},
+				},
+			},
+		},
+	})
+	if _, err := p.HandleMethod(pluginabi.MethodModelStatic, staticReqWithAlias); err != nil {
+		t.Fatalf("model.static with OAuthModelAlias failed: %v", err)
+	}
+	routeHostAliasRes, err := p.HandleMethod(pluginabi.MethodModelRoute, routeWithProviderReq)
+	if err != nil {
+		t.Fatalf("model.route with host alias failed: %v", err)
+	}
+	rHostAliasResp, ok := routeHostAliasRes.(pluginapi.ModelRouteResponse)
+	if !ok {
+		t.Fatalf("expected ModelRouteResponse, got %#v", routeHostAliasRes)
+	}
+	if rHostAliasResp.Handled {
+		t.Fatalf("expected Handled=false when host OAuthModelAlias already registers AIStudio/gemini-4-argon, got: %+v", rHostAliasResp)
+	}
+}
+
+func TestSchedulerPickDefersToHostSessionAffinityWhenPartialPoolCooldown(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
+	_ = os.MkdirAll(filepath.Join(tmpDir, ".cli-proxy-api"), 0o700)
+	for _, email := range []string{"cooled@example.com", "healthy@example.com"} {
+		accDir := filepath.Join(tmpDir, "accounts", email)
+		_ = os.MkdirAll(accDir, 0o700)
+		_ = os.WriteFile(filepath.Join(accDir, "account.json"), []byte(`{"label":"`+email+`","enabled":true,"locale":"en-US","timezone":"Asia/Tokyo"}`), 0o600)
+		_ = os.WriteFile(filepath.Join(accDir, "storage-state.json"), []byte(`{"cookies":[{"name":"SAPISID","value":"123","domain":".google.com","path":"/","expires":-1},{"name":"__Secure-1PAPISID","value":"456","domain":".google.com","path":"/","expires":-1},{"name":"__Secure-3PAPISID","value":"789","domain":".google.com","path":"/","expires":-1}]}`), 0o600)
+	}
+
+	p := cpa.NewPlugin(nil)
+	defer func() {
+		_, _ = p.HandleMethod(pluginabi.MethodPluginShutdown, nil)
+	}()
+
+	cfgYAML := []byte("data_dir: \"" + filepath.ToSlash(tmpDir) + "\"\nwaa_backend: spidermonkey\nauto_start: false\nsync_auth_files: false\n")
+	regReq, _ := json.Marshal(map[string]any{
+		"config_yaml":    cfgYAML,
+		"schema_version": pluginabi.SchemaVersion,
+	})
+	if _, err := p.HandleMethod(pluginabi.MethodPluginRegister, regReq); err != nil {
+		t.Fatalf("plugin.register failed: %v", err)
+	}
+
+	rt, err := p.Runtime()
+	if err != nil {
+		t.Fatalf("runtime error: %v", err)
+	}
+	for _, email := range []string{"cooled@example.com", "healthy@example.com"} {
+		if err := rt.Pool().SetCatalog(email, aistudio.BenefitTierPro, []aistudio.Model{
+			{ID: "gemini-4-argon", Methods: []string{"generateContent"}, Capabilities: map[string]bool{"chat_model": true}},
+		}); err != nil {
+			t.Fatalf("SetCatalog %s failed: %v", email, err)
+		}
+	}
+
+	cooldownScope := aistudio.ChannelCooldownScope(aistudio.ChannelPlayground, "gemini-4-argon")
+	if err := rt.Pool().MarkCooldownIfGeneration("cooled@example.com", cooldownScope, 1, time.Now(), time.Now().Add(time.Hour), "quota_exhausted"); err != nil {
+		t.Fatalf("mark cooldown failed: %v", err)
+	}
+
+	// Simulate host-dispatched scheduler.pick (with SelectionIDMetadataKey set) where
+	// cooled@example.com is still passed by the host alongside healthy@example.com.
+	schedReq, _ := json.Marshal(pluginapi.SchedulerPickRequest{
+		Provider: "aistudio2api",
+		Model:    "AIStudio/gemini-4-argon",
+		Options: pluginapi.SchedulerOptions{
+			Metadata: map[string]any{
+				pluginapi.SelectionIDMetadataKey: "sel-123",
+			},
+		},
+		Candidates: []pluginapi.SchedulerAuthCandidate{
+			{
+				ID:         "aistudio2api-cooled@example.com.json",
+				Provider:   "aistudio2api",
+				Status:     "active",
+				Attributes: map[string]string{"provider": "aistudio2api", "account_id": "cooled@example.com"},
+			},
+			{
+				ID:         "aistudio2api-healthy@example.com.json",
+				Provider:   "aistudio2api",
+				Status:     "active",
+				Attributes: map[string]string{"provider": "aistudio2api", "account_id": "healthy@example.com"},
+			},
+		},
+	})
+	schedRes, err := p.HandleMethod(pluginabi.MethodSchedulerPick, schedReq)
+	if err != nil {
+		t.Fatalf("scheduler.pick failed: %v", err)
+	}
+	sResp := schedRes.(pluginapi.SchedulerPickResponse)
+	if sResp.Handled {
+		t.Fatalf("expected Handled=false when hostDispatched and >=1 candidate is eligible so host SessionAffinitySelector runs, got: %+v", sResp)
 	}
 }

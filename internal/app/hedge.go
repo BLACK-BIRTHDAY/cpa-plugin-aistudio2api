@@ -281,7 +281,6 @@ func (service *trackedService) supersede(requestCtx context.Context, requestID s
 	}()
 }
 
-
 // FirstEventLatencies 返回各模型与通道近期原请求首事件等待的 p95
 func (manager *runtimeManager) FirstEventLatencies() []api.FirstEventLatency {
 	return manager.requests.firstEvents.latencies(time.Now())

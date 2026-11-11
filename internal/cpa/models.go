@@ -83,6 +83,15 @@ func (p *Plugin) handleModelForAuth(raw []byte) (any, error) {
 	}, nil
 }
 
+func hasAIStudioProvider(providers []string) bool {
+	for _, p := range providers {
+		if isAIStudioProvider(p) {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Plugin) handleModelRoute(raw []byte) (any, error) {
 	var req rpcModelRouteRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -91,6 +100,20 @@ func (p *Plugin) handleModelRoute(raw []byte) (any, error) {
 	model := strings.TrimSpace(req.RequestedModel)
 	if model == "" || p.serviceStopped.Load() {
 		return pluginapi.ModelRouteResponse{Handled: false}, nil
+	}
+
+	targetKind := pluginapi.ModelRouteTargetSelf
+	target := PluginID
+	if hasAIStudioProvider(req.AvailableProviders) {
+		// When the host already configured an oauth.model-alias entry matching this
+		// model (e.g. name: gemini-4-argon, alias: AIStudio/gemini-4-argon), defer
+		// directly to the host so GlobalModelRegistry + AuthManager + SessionAffinitySelector
+		// match the registered alias without stripping it to an unregistered base name.
+		if p.hasHostModelAlias(model) {
+			return pluginapi.ModelRouteResponse{Handled: false}, nil
+		}
+		targetKind = pluginapi.ModelRouteTargetProvider
+		target = ProviderID
 	}
 
 	prefix := strings.TrimSpace(p.Config().ModelPrefix)
@@ -105,10 +128,13 @@ func (p *Plugin) handleModelRoute(raw []byte) (any, error) {
 			if clean == "" {
 				continue
 			}
+			if mapped := p.resolveConfiguredModelMapping(clean); mapped != "" {
+				clean = mapped
+			}
 			return pluginapi.ModelRouteResponse{
 				Handled:     true,
-				TargetKind:  pluginapi.ModelRouteTargetSelf,
-				Target:      PluginID,
+				TargetKind:  targetKind,
+				Target:      target,
 				TargetModel: clean,
 				Reason:      "routed prefixed AI Studio model to aistudio2api",
 			}, nil
@@ -119,8 +145,8 @@ func (p *Plugin) handleModelRoute(raw []byte) (any, error) {
 		if !p.isModelExcluded(mapped) && !p.isModelExcluded(model) {
 			return pluginapi.ModelRouteResponse{
 				Handled:     true,
-				TargetKind:  pluginapi.ModelRouteTargetSelf,
-				Target:      PluginID,
+				TargetKind:  targetKind,
+				Target:      target,
 				TargetModel: mapped,
 				Reason:      "routed mapped AI Studio model alias to aistudio2api",
 			}, nil
@@ -592,6 +618,48 @@ func (p *Plugin) setHostExcludedModels(hostExcluded map[string][]string) {
 	p.excludedMu.Lock()
 	p.hostExcluded = cloned
 	p.excludedMu.Unlock()
+}
+
+func (p *Plugin) setHostModelAliases(hostAliases map[string][]pluginapi.ModelAlias) {
+	p.excludedMu.Lock()
+	if len(hostAliases) == 0 {
+		p.hostAliases = nil
+		p.excludedMu.Unlock()
+		return
+	}
+	cloned := make(map[string][]pluginapi.ModelAlias, len(hostAliases))
+	for k, v := range hostAliases {
+		cloned[strings.ToLower(strings.TrimSpace(k))] = append([]pluginapi.ModelAlias(nil), v...)
+	}
+	p.hostAliases = cloned
+	p.excludedMu.Unlock()
+}
+
+func stripOptionalThinkingSuffix(model string) string {
+	model = strings.TrimSpace(model)
+	if idx := strings.LastIndex(model, "("); idx > 0 && strings.HasSuffix(model, ")") {
+		return strings.TrimSpace(model[:idx])
+	}
+	return model
+}
+
+func (p *Plugin) hasHostModelAlias(requestedModel string) bool {
+	requestedModel = strings.TrimSpace(requestedModel)
+	if requestedModel == "" {
+		return false
+	}
+	baseRequested := stripOptionalThinkingSuffix(requestedModel)
+	p.excludedMu.RLock()
+	defer p.excludedMu.RUnlock()
+	for _, key := range []string{ProviderID, "aistudio", "google-aistudio"} {
+		for _, entry := range p.hostAliases[key] {
+			alias := strings.TrimSpace(entry.Alias)
+			if alias != "" && (strings.EqualFold(alias, requestedModel) || strings.EqualFold(alias, baseRequested)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (p *Plugin) isModelExcluded(modelID string) bool {

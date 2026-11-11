@@ -512,6 +512,7 @@ func (manager *runtimeManager) RenewAccountCookies(ctx context.Context, accountI
 	defer manager.mu.RUnlock()
 	return manager.current.admin.RenewAccountCookies(ctx, accountID, token, cookies)
 }
+
 // UpdateAccount 在当前生成服务更新账户
 func (manager *runtimeManager) UpdateAccount(ctx context.Context, id string, input api.AccountInput) (api.AdminAccount, error) {
 	manager.mu.RLock()
