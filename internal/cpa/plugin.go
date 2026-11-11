@@ -30,6 +30,7 @@ type Plugin struct {
 	excludedMu      sync.RWMutex
 	accountExcluded map[string][]string
 	hostExcluded    map[string][]string
+	hostAliases     map[string][]pluginapi.ModelAlias
 	chromeLogin     sync.Mutex
 	serviceStopped  atomic.Bool
 	lastRegisterNs  atomic.Int64
@@ -390,6 +391,7 @@ func (p *Plugin) handleShutdown() (any, error) {
 	p.excludedMu.Lock()
 	clear(p.accountExcluded)
 	clear(p.hostExcluded)
+	clear(p.hostAliases)
 	p.excludedMu.Unlock()
 	if syncAuth && rt != nil {
 		p.setHostAuthFilesDisabled(rt, true)

@@ -774,4 +774,31 @@ func TestPrefixedModelRouteUsesProviderWhenAvailableAndApplyConfigSyncsHedgeAndC
 	if rNoResp.TargetModel != "gemini-4-argon" {
 		t.Fatalf("expected TargetModel=gemini-4-argon, got %q", rNoResp.TargetModel)
 	}
+
+	// 6. When host oauth.model-alias already defines alias "AIStudio/gemini-4-argon" -> "gemini-4-argon"
+	// (no-fork rename in host GlobalModelRegistry), model.route returns Handled=false so the host
+	// matches the registered alias directly without 503 auth_not_found on the stripped base model.
+	staticReqWithAlias, _ := json.Marshal(pluginapi.StaticModelRequest{
+		Host: pluginapi.HostConfigSummary{
+			OAuthModelAlias: map[string][]pluginapi.ModelAlias{
+				"aistudio2api": {
+					{Name: "gemini-4-argon", Alias: "AIStudio/gemini-4-argon"},
+				},
+			},
+		},
+	})
+	if _, err := p.HandleMethod(pluginabi.MethodModelStatic, staticReqWithAlias); err != nil {
+		t.Fatalf("model.static with OAuthModelAlias failed: %v", err)
+	}
+	routeHostAliasRes, err := p.HandleMethod(pluginabi.MethodModelRoute, routeWithProviderReq)
+	if err != nil {
+		t.Fatalf("model.route with host alias failed: %v", err)
+	}
+	rHostAliasResp, ok := routeHostAliasRes.(pluginapi.ModelRouteResponse)
+	if !ok {
+		t.Fatalf("expected ModelRouteResponse, got %#v", routeHostAliasRes)
+	}
+	if rHostAliasResp.Handled {
+		t.Fatalf("expected Handled=false when host OAuthModelAlias already registers AIStudio/gemini-4-argon, got: %+v", rHostAliasResp)
+	}
 }

@@ -25,6 +25,7 @@ func (p *Plugin) handleModelStatic(raw []byte) (any, error) {
 		_ = json.Unmarshal(raw, &req)
 	}
 	p.setHostExcludedModels(req.Host.ExcludedModels)
+	p.setHostModelAliases(req.Host.OAuthModelAlias)
 	models := p.collectCatalogModels()
 	return pluginapi.ModelResponse{
 		Provider: ProviderID,
@@ -38,6 +39,7 @@ func (p *Plugin) handleModelForAuth(raw []byte) (any, error) {
 		return nil, err
 	}
 	p.setHostExcludedModels(req.Host.ExcludedModels)
+	p.setHostModelAliases(req.Host.OAuthModelAlias)
 	if !isAIStudioProvider(req.AuthProvider) {
 		var payload AuthFilePayload
 		if len(req.StorageJSON) > 0 {
@@ -104,7 +106,15 @@ func (p *Plugin) handleModelRoute(raw []byte) (any, error) {
 
 	targetKind := pluginapi.ModelRouteTargetSelf
 	target := PluginID
-	if hasAIStudioProvider(req.AvailableProviders) {
+	hasHostProvider := hasAIStudioProvider(req.AvailableProviders)
+	if hasHostProvider {
+		// When the host already configured an oauth.model-alias entry matching this
+		// model (e.g. name: gemini-4-argon, alias: AIStudio/gemini-4-argon), defer
+		// directly to the host so GlobalModelRegistry + AuthManager + SessionAffinitySelector
+		// match the registered alias without stripping it to an unregistered base name.
+		if p.hasHostModelAlias(model) {
+			return pluginapi.ModelRouteResponse{Handled: false}, nil
+		}
 		targetKind = pluginapi.ModelRouteTargetProvider
 		target = ProviderID
 	}
@@ -619,6 +629,48 @@ func (p *Plugin) setHostExcludedModels(hostExcluded map[string][]string) {
 	p.excludedMu.Lock()
 	p.hostExcluded = cloned
 	p.excludedMu.Unlock()
+}
+
+func (p *Plugin) setHostModelAliases(hostAliases map[string][]pluginapi.ModelAlias) {
+	p.excludedMu.Lock()
+	if len(hostAliases) == 0 {
+		p.hostAliases = nil
+		p.excludedMu.Unlock()
+		return
+	}
+	cloned := make(map[string][]pluginapi.ModelAlias, len(hostAliases))
+	for k, v := range hostAliases {
+		cloned[strings.ToLower(strings.TrimSpace(k))] = append([]pluginapi.ModelAlias(nil), v...)
+	}
+	p.hostAliases = cloned
+	p.excludedMu.Unlock()
+}
+
+func stripOptionalThinkingSuffix(model string) string {
+	model = strings.TrimSpace(model)
+	if idx := strings.LastIndex(model, "("); idx > 0 && strings.HasSuffix(model, ")") {
+		return strings.TrimSpace(model[:idx])
+	}
+	return model
+}
+
+func (p *Plugin) hasHostModelAlias(requestedModel string) bool {
+	requestedModel = strings.TrimSpace(requestedModel)
+	if requestedModel == "" {
+		return false
+	}
+	baseRequested := stripOptionalThinkingSuffix(requestedModel)
+	p.excludedMu.RLock()
+	defer p.excludedMu.RUnlock()
+	for _, key := range []string{ProviderID, "aistudio", "google-aistudio"} {
+		for _, entry := range p.hostAliases[key] {
+			alias := strings.TrimSpace(entry.Alias)
+			if alias != "" && (strings.EqualFold(alias, requestedModel) || strings.EqualFold(alias, baseRequested)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (p *Plugin) isModelExcluded(modelID string) bool {
