@@ -42,6 +42,7 @@ type PluginConfig struct {
 	YouTubeLinks           *bool         `json:"youtube_links" yaml:"youtube_links"`
 	FirstEventHedge        string        `json:"first_event_hedge" yaml:"first_event_hedge"`
 	FirstEventHedgeModels  string        `json:"first_event_hedge_models" yaml:"first_event_hedge_models"`
+	BuildStallTimeout      string        `json:"build_stall_timeout" yaml:"build_stall_timeout"`
 	AssistantFallback      *bool         `json:"assistant_fallback" yaml:"assistant_fallback"`
 	SearchModelAliases     *bool         `json:"search_model_aliases" yaml:"search_model_aliases"`
 	GoogleSearch           *bool         `json:"google_search" yaml:"google_search"`
@@ -138,6 +139,9 @@ func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
 			}
 			if pcfg.FirstEventHedgeModels == "" {
 				pcfg.FirstEventHedgeModels = opt.FirstEventHedgeModels
+			}
+			if pcfg.BuildStallTimeout == "" {
+				pcfg.BuildStallTimeout = opt.BuildStallTimeout
 			}
 			if pcfg.AssistantFallback == nil {
 				pcfg.AssistantFallback = opt.AssistantFallback
@@ -273,6 +277,11 @@ func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
 	}
 	cfg.FirstEventHedge = hedge
 	cfg.FirstEventHedgeModels = hedgeModels
+	buildStallRaw := strings.TrimSpace(pcfg.BuildStallTimeout)
+	if buildStallRaw == "" {
+		buildStallRaw = strings.TrimSpace(os.Getenv("BUILD_STALL_TIMEOUT"))
+	}
+	cfg.BuildStallTimeout = parseDurationOrSeconds(buildStallRaw, config.DefaultBuildStallTimeout)
 	if pcfg.AssistantFallback != nil {
 		cfg.AssistantFallback = *pcfg.AssistantFallback
 	} else if env := strings.TrimSpace(os.Getenv("ASSISTANT_FALLBACK")); env != "" {
@@ -322,4 +331,18 @@ func normalizeModelAliasesString(raw string) string {
 		out = append(out, part)
 	}
 	return strings.Join(out, ",")
+}
+
+func parseDurationOrSeconds(raw string, def time.Duration) time.Duration {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return def
+	}
+	if seconds, err := strconv.Atoi(trimmed); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if d, err := time.ParseDuration(trimmed); err == nil && d > 0 {
+		return d
+	}
+	return def
 }

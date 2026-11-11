@@ -344,6 +344,12 @@ func (p *Plugin) registrationPayload() rpcRegistration {
 					Description: "启用首事件对冲（first_event_hedge）的模型列表（逗号分隔）",
 				},
 				{
+					Name:        "build_stall_timeout",
+					Type:        pluginapi.ConfigFieldTypeString,
+					Default:     "2m",
+					Description: "Build (-build) 通道首事件与无正文停顿超时（例如 2m 或 120s）",
+				},
+				{
 					Name:        "assistant_fallback",
 					Type:        pluginapi.ConfigFieldTypeBoolean,
 					Default:     true,

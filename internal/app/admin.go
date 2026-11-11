@@ -961,6 +961,17 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 	if err != nil {
 		return api.RuntimeConfig{}, invalidConfigError(fmt.Errorf("REQUEST_TIMEOUT 无效: %w", err))
 	}
+	buildStallTimeout := saved.BuildStallTimeout
+	if buildStallTimeout <= 0 {
+		buildStallTimeout = config.DefaultBuildStallTimeout
+	}
+	if strings.TrimSpace(value.BuildStallTimeout) != "" {
+		parsed, err := time.ParseDuration(strings.TrimSpace(value.BuildStallTimeout))
+		if err != nil {
+			return api.RuntimeConfig{}, invalidConfigError(fmt.Errorf("BUILD_STALL_TIMEOUT 无效: %w", err))
+		}
+		buildStallTimeout = parsed
+	}
 	cfg := config.Config{
 		AutoStart:      value.AutoStart,
 		HideDockIcon:   value.HideDockIcon,
@@ -973,7 +984,7 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 		SearchModelAliases:     value.SearchModelAliases, GoogleSearch: value.GoogleSearch,
 		ContinuationRewrite: value.ContinuationRewrite, ContinuationPrompt: strings.TrimSpace(value.ContinuationPrompt),
 		FirstEventHedge: strings.ToLower(strings.TrimSpace(value.FirstEventHedge)), FirstEventHedgeModels: strings.TrimSpace(value.FirstEventHedgeModels), AssistantFallback: value.AssistantFallback, AuthStates: value.AuthStates, ListenAddr: value.ListenAddr, PreviewListenAddr: value.PreviewListenAddr,
-		ProxyAPIKey: value.APIKey, Proxy: value.Proxy, InitTimeout: initTimeout, RequestTimeout: requestTimeout,
+		ProxyAPIKey: value.APIKey, Proxy: value.Proxy, InitTimeout: initTimeout, RequestTimeout: requestTimeout, BuildStallTimeout: buildStallTimeout,
 		WarmWorkerLimit: value.WarmWorkerLimit, MaxActiveWorkers: value.MaxActiveWorkers,
 		WarmStartupConcurrency: value.WarmStartupConcurrency,
 		PerAccountConcurrency:  value.PerAccountConcurrency,
@@ -1280,7 +1291,8 @@ func runtimeConfigDTO(cfg config.Config) api.RuntimeConfig {
 		ActiveListenAddr: cfg.ListenAddr, ActiveAPIKey: cfg.ProxyAPIKey,
 		PreviewListenAddr: cfg.PreviewListenAddr, ActivePreviewListenAddr: cfg.PreviewListenAddr,
 		Proxy: cfg.Proxy, InitTimeout: cfg.InitTimeout.String(), RequestTimeout: cfg.RequestTimeout.String(),
-		WarmWorkerLimit: cfg.WarmWorkerLimit, MaxActiveWorkers: cfg.MaxActiveWorkers,
+		BuildStallTimeout: cfg.BuildStallTimeout.String(),
+		WarmWorkerLimit:   cfg.WarmWorkerLimit, MaxActiveWorkers: cfg.MaxActiveWorkers,
 		WarmStartupConcurrency: cfg.WarmStartupConcurrency,
 		PerAccountConcurrency:  cfg.PerAccountConcurrency,
 		RoutingStrategy:        cfg.RoutingStrategy,

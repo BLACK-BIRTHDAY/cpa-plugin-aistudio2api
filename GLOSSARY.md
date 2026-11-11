@@ -39,3 +39,11 @@ _Avoid_: Masked stop, silent completion, fake success
 **Forbidden Workspace Tool Interception**:
 The detection in `AssistantStreamDecoder` that halts processing of bogus remote applet tools (`run_command`, `view_file`, etc.) and triggers in-applet follow-up prompts for client function calls.
 _Avoid_: Ignored workspace steps, hanging tool waits
+
+**Build Pre-Commit Stall Timeout**:
+The 2-minute inactivity deadline applied to Build and Assistant (`-build`) attempts during both first-event waiting and pre-commit streaming (when only thinking or metadata has arrived and no visible text, media, or tool call has been committed), after which the stalled attempt is cancelled and the request fails over to the next eligible account on the same stream.
+_Avoid_: Global request timeout, first-event hedge, account cooldown
+
+**Sticky Session Rebind on Failover**:
+The failover transition that clears sticky account affinity (`preferredAccountID`) once the bound account fails or times out within a request, dispatches the retry to a healthy sibling account, and re-anchors the conversation's `assistantSessions` tip to the newly succeeded account.
+_Avoid_: Permanent session lock, blind same-account retry

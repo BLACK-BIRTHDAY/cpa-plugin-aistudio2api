@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
+	"github.com/Mag1cFall/AIStudio2API/internal/config"
 	"github.com/Mag1cFall/AIStudio2API/internal/cpa"
 	"github.com/Mag1cFall/AIStudio2API/internal/pluginabi"
 	"github.com/Mag1cFall/AIStudio2API/internal/pluginapi"
@@ -56,8 +57,8 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 	if !strings.Contains(string(regJSON), `"executor_model_scope":"both"`) {
 		t.Fatalf("expected executor_model_scope=both, got: %s", string(regJSON))
 	}
-	if !strings.Contains(string(regJSON), `"first_event_hedge_models"`) || !strings.Contains(string(regJSON), `"assistant_fallback"`) {
-		t.Fatalf("missing expected config fields (first_event_hedge_models, assistant_fallback): %s", string(regJSON))
+	if !strings.Contains(string(regJSON), `"first_event_hedge_models"`) || !strings.Contains(string(regJSON), `"assistant_fallback"`) || !strings.Contains(string(regJSON), `"build_stall_timeout"`) {
+		t.Fatalf("missing expected config fields (first_event_hedge_models, assistant_fallback, build_stall_timeout): %s", string(regJSON))
 	}
 
 	// 2. auth.identifier & auth.parse
@@ -557,6 +558,66 @@ func TestParsePluginConfigHedgeAndAssistantFallback(t *testing.T) {
 	}
 	if pcfgOpt.AssistantFallback == nil || *pcfgOpt.AssistantFallback || cfgOpt.AssistantFallback {
 		t.Fatalf("expected AssistantFallback=false via options")
+	}
+}
+
+func TestParsePluginConfigBuildStallTimeout(t *testing.T) {
+	// 1. Defaults
+	_, cfgDef, err := cpa.ParsePluginConfig([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("ParsePluginConfig default error: %v", err)
+	}
+	if cfgDef.BuildStallTimeout != config.DefaultBuildStallTimeout || config.DefaultBuildStallTimeout != 2*time.Minute {
+		t.Fatalf("expected default BuildStallTimeout=2m, got %v", cfgDef.BuildStallTimeout)
+	}
+
+	// 2. Explicit top-level duration string
+	topYAML := []byte("build_stall_timeout: 3m\n")
+	pcfgTop, cfgTop, err := cpa.ParsePluginConfig(topYAML)
+	if err != nil {
+		t.Fatalf("ParsePluginConfig top error: %v", err)
+	}
+	if pcfgTop.BuildStallTimeout != "3m" || cfgTop.BuildStallTimeout != 3*time.Minute {
+		t.Fatalf("expected BuildStallTimeout=3m, got pcfg=%q cfg=%v", pcfgTop.BuildStallTimeout, cfgTop.BuildStallTimeout)
+	}
+
+	// 3. Explicit top-level integer seconds
+	secYAML := []byte("build_stall_timeout: \"90\"\n")
+	pcfgSec, cfgSec, err := cpa.ParsePluginConfig(secYAML)
+	if err != nil {
+		t.Fatalf("ParsePluginConfig sec error: %v", err)
+	}
+	if pcfgSec.BuildStallTimeout != "90" || cfgSec.BuildStallTimeout != 90*time.Second {
+		t.Fatalf("expected BuildStallTimeout=90s, got pcfg=%q cfg=%v", pcfgSec.BuildStallTimeout, cfgSec.BuildStallTimeout)
+	}
+
+	// 4. Merged from options
+	optYAML := []byte("options:\n  build_stall_timeout: 45s\n")
+	pcfgOpt, cfgOpt, err := cpa.ParsePluginConfig(optYAML)
+	if err != nil {
+		t.Fatalf("ParsePluginConfig opt error: %v", err)
+	}
+	if pcfgOpt.BuildStallTimeout != "45s" || cfgOpt.BuildStallTimeout != 45*time.Second {
+		t.Fatalf("expected BuildStallTimeout=45s via options, got pcfg=%q cfg=%v", pcfgOpt.BuildStallTimeout, cfgOpt.BuildStallTimeout)
+	}
+
+	// 5. Environment variable fallback
+	t.Setenv("BUILD_STALL_TIMEOUT", "150s")
+	_, cfgEnv, err := cpa.ParsePluginConfig([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("ParsePluginConfig env error: %v", err)
+	}
+	if cfgEnv.BuildStallTimeout != 150*time.Second {
+		t.Fatalf("expected BuildStallTimeout=150s from env, got %v", cfgEnv.BuildStallTimeout)
+	}
+
+	t.Setenv("BUILD_STALL_TIMEOUT", "180")
+	_, cfgEnvSec, err := cpa.ParsePluginConfig([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("ParsePluginConfig env sec error: %v", err)
+	}
+	if cfgEnvSec.BuildStallTimeout != 180*time.Second {
+		t.Fatalf("expected BuildStallTimeout=180s from env, got %v", cfgEnvSec.BuildStallTimeout)
 	}
 }
 

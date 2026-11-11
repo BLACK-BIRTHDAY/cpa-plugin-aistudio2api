@@ -20,6 +20,8 @@ const (
 	defaultPreviewListenAddr  = "127.0.0.1:2050"
 	defaultInitTimeout        = 2 * time.Minute
 	defaultRequestTimeout     = 30 * time.Minute
+	defaultBuildStallTimeout  = 2 * time.Minute
+	DefaultBuildStallTimeout  = defaultBuildStallTimeout
 	defaultWarmWorkerLimit    = 10
 	defaultMaxActiveWorkers   = 20
 	camoufoxWarmWorkerLimit   = 5
@@ -67,6 +69,7 @@ var configKeys = [...]string{
 	"GOOGLE_SEARCH",
 	"FIRST_EVENT_HEDGE",
 	"FIRST_EVENT_HEDGE_MODELS",
+	"BUILD_STALL_TIMEOUT",
 	"ASSISTANT_FALLBACK",
 	"CONTINUATION_REWRITE",
 	"CONTINUATION_PROMPT",
@@ -135,6 +138,7 @@ type Config struct {
 	Proxy                  string
 	InitTimeout            time.Duration
 	RequestTimeout         time.Duration
+	BuildStallTimeout      time.Duration
 	WarmWorkerLimit        int
 	MaxActiveWorkers       int
 	WarmStartupConcurrency int
@@ -185,6 +189,7 @@ func Default() Config {
 		PreviewListenAddr:      defaultPreviewListenAddr,
 		InitTimeout:            defaultInitTimeout,
 		RequestTimeout:         defaultRequestTimeout,
+		BuildStallTimeout:      defaultBuildStallTimeout,
 		WarmWorkerLimit:        defaultWarmWorkerLimit,
 		MaxActiveWorkers:       defaultMaxActiveWorkers,
 		WarmStartupConcurrency: defaultWarmConcurrency,
@@ -237,6 +242,7 @@ var configSetters = map[string]func(*Config, string) error{
 	"PER_ACCOUNT_CONCURRENCY":  intSetter("PER_ACCOUNT_CONCURRENCY", func(c *Config) *int { return &c.PerAccountConcurrency }),
 	"INIT_TIMEOUT":             durationSetter("INIT_TIMEOUT", func(c *Config) *time.Duration { return &c.InitTimeout }),
 	"REQUEST_TIMEOUT":          durationSetter("REQUEST_TIMEOUT", func(c *Config) *time.Duration { return &c.RequestTimeout }),
+	"BUILD_STALL_TIMEOUT":      durationSetter("BUILD_STALL_TIMEOUT", func(c *Config) *time.Duration { return &c.BuildStallTimeout }),
 	"ADMIN_USERNAME":           textSetter(func(c *Config) *string { return &c.AdminUsername }, strings.TrimSpace),
 	"ADMIN_PASSWORD":           textSetter(func(c *Config) *string { return &c.AdminPassword }, func(value string) string { return value }),
 	"FIRST_EVENT_HEDGE":        textSetter(func(c *Config) *string { return &c.FirstEventHedge }, lowerTrim),
@@ -354,6 +360,12 @@ var configChecks = []configCheck{
 	{[]string{"REQUEST_TIMEOUT"}, func(c Config) error {
 		if c.RequestTimeout <= 0 {
 			return fmt.Errorf("REQUEST_TIMEOUT 必须是正数时长")
+		}
+		return nil
+	}},
+	{[]string{"BUILD_STALL_TIMEOUT"}, func(c Config) error {
+		if c.BuildStallTimeout <= 0 {
+			return fmt.Errorf("BUILD_STALL_TIMEOUT 必须是正数时长")
 		}
 		return nil
 	}},
@@ -591,6 +603,7 @@ func (c Config) envValues() map[string]string {
 		"PROXY":                    c.Proxy,
 		"INIT_TIMEOUT":             c.InitTimeout.String(),
 		"REQUEST_TIMEOUT":          c.RequestTimeout.String(),
+		"BUILD_STALL_TIMEOUT":      c.BuildStallTimeout.String(),
 		"WARM_WORKER_LIMIT":        strconv.Itoa(c.WarmWorkerLimit),
 		"MAX_ACTIVE_WORKERS":       strconv.Itoa(c.MaxActiveWorkers),
 		"WARM_STARTUP_CONCURRENCY": strconv.Itoa(c.WarmStartupConcurrency),

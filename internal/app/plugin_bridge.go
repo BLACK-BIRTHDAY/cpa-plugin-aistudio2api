@@ -206,6 +206,7 @@ func (rt *PluginRuntime) ApplyConfig(cfg config.Config) {
 	)
 	if ts, ok := cur.service.(*trackedService); ok && ts != nil {
 		ts.SetFirstEventHedge(cfg.FirstEventHedge, cfg.FirstEventHedgeModels)
+		ts.SetBuildStallTimeout(cfg.BuildStallTimeout)
 		ts.buildNativeNonstream = cfg.BuildNativeNonstream
 		ts.modelMapping, _ = config.ParseModelMapping(cfg.ModelMapping)
 		if pooled, ok := ts.service.(*aistudio.PooledService); ok && pooled != nil {

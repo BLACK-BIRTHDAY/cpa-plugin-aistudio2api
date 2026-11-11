@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -642,29 +643,38 @@ func (manager *runtimeManager) decorateRuntimeConfig(value api.RuntimeConfig, ac
 func sameDataConfig(value api.RuntimeConfig, active config.Config, overrides dataConfigOverrides) bool {
 	initTimeout, _ := time.ParseDuration(value.InitTimeout)
 	requestTimeout, _ := time.ParseDuration(value.RequestTimeout)
+	buildStallTimeout := active.BuildStallTimeout
+	if strings.TrimSpace(value.BuildStallTimeout) != "" {
+		if parsed, err := time.ParseDuration(strings.TrimSpace(value.BuildStallTimeout)); err == nil {
+			buildStallTimeout = parsed
+		}
+	}
 	saved := config.Config{
 		AuthStates: value.AuthStates, Proxy: value.Proxy,
-		InitTimeout: initTimeout, RequestTimeout: requestTimeout, StripThoughtSignatures: value.StripThoughtSignatures,
-		UpstreamChannels:      value.UpstreamChannels,
-		ModelMapping:          value.ModelMapping,
-		WAABackend:            value.WAABackend,
-		BuildNativeNonstream:  value.BuildNativeNonstream,
-		NonstreamKeepalive:    value.NonstreamKeepalive,
-		FakeStream:            value.FakeStream,
-		YouTubeLinks:          value.YouTubeLinks,
-		SearchModelAliases:    value.SearchModelAliases,
-		GoogleSearch:          value.GoogleSearch,
-		FirstEventHedge:       value.FirstEventHedge,
-		FirstEventHedgeModels: value.FirstEventHedgeModels,
-		AssistantFallback:     value.AssistantFallback,
-		ContinuationRewrite:   value.ContinuationRewrite,
-		ContinuationPrompt:    value.ContinuationPrompt,
-		MediaOutput:           value.MediaOutput,
-		MediaBaseURL:          value.MediaBaseURL,
+		InitTimeout: initTimeout, RequestTimeout: requestTimeout,
+		BuildStallTimeout:      buildStallTimeout,
+		StripThoughtSignatures: value.StripThoughtSignatures,
+		UpstreamChannels:       value.UpstreamChannels,
+		ModelMapping:           value.ModelMapping,
+		WAABackend:             value.WAABackend,
+		BuildNativeNonstream:   value.BuildNativeNonstream,
+		NonstreamKeepalive:     value.NonstreamKeepalive,
+		FakeStream:             value.FakeStream,
+		YouTubeLinks:           value.YouTubeLinks,
+		SearchModelAliases:     value.SearchModelAliases,
+		GoogleSearch:           value.GoogleSearch,
+		FirstEventHedge:        value.FirstEventHedge,
+		FirstEventHedgeModels:  value.FirstEventHedgeModels,
+		AssistantFallback:      value.AssistantFallback,
+		ContinuationRewrite:    value.ContinuationRewrite,
+		ContinuationPrompt:     value.ContinuationPrompt,
+		MediaOutput:            value.MediaOutput,
+		MediaBaseURL:           value.MediaBaseURL,
 	}
 	overrides.Apply(&saved)
 	return saved.AuthStates == active.AuthStates && saved.Proxy == active.Proxy &&
 		saved.InitTimeout == active.InitTimeout && saved.RequestTimeout == active.RequestTimeout &&
+		saved.BuildStallTimeout == active.BuildStallTimeout &&
 		slices.Equal(saved.UpstreamChannels, active.UpstreamChannels) && saved.ModelMapping == active.ModelMapping &&
 		saved.WAABackend == active.WAABackend &&
 		saved.BuildNativeNonstream == active.BuildNativeNonstream &&

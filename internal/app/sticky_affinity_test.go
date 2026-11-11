@@ -425,3 +425,253 @@ func TestHedgeSelections_PreferredAccountUsesSameAccountOnly(t *testing.T) {
 		t.Errorf("expected second selection to fallback to same account, got %s", gotMulti[1].AccountID)
 	}
 }
+
+// TestGenerateWithRetry_BuildFirstEventStallTimeoutSwitchesAccountAndUnbindsSticky 验证 -build 模型首事件等待超时时取消账户 A、解绑首选粘性、切换至账户 B 且不对账户 A 施加池冷却
+func TestGenerateWithRetry_BuildFirstEventStallTimeoutSwitchesAccountAndUnbindsSticky(t *testing.T) {
+	argonBuildModel := aistudio.Model{
+		ID:           "gemini-4-argon-build",
+		Methods:      []string{"generateContent"},
+		Capabilities: map[string]bool{"chat_model": true, "assistant_route": true},
+	}
+	accA := &aistudio.Account{
+		ID:     "a@example.com",
+		Config: aistudio.AccountConfig{Enabled: true, Label: "Account A"},
+		State:  aistudio.AccountReady,
+		Models: []aistudio.Model{argonBuildModel},
+	}
+	accB := &aistudio.Account{
+		ID:     "b@example.com",
+		Config: aistudio.AccountConfig{Enabled: true, Label: "Account B"},
+		State:  aistudio.AccountReady,
+		Models: []aistudio.Model{argonBuildModel},
+	}
+
+	pool := aistudio.NewAccountPool([]*aistudio.Account{accA, accB}, 1)
+	pool.SetUpstreamChannels([]aistudio.Channel{aistudio.ChannelBuild})
+	if err := pool.SetBuildCatalog("a@example.com", []aistudio.Model{argonBuildModel}); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.SetBuildCatalog("b@example.com", []aistudio.Model{argonBuildModel}); err != nil {
+		t.Fatal(err)
+	}
+
+	var aCalled, bCalled, aCancelled atomic.Bool
+	mockSvc := &testMockService{
+		onGenerate: func(ctx context.Context, req aistudio.GenerateRequest) (<-chan aistudio.Event, error) {
+			if req.AccountID == "a@example.com" {
+				aCalled.Store(true)
+				ch := make(chan aistudio.Event)
+				go func() {
+					<-ctx.Done()
+					aCancelled.Store(true)
+					close(ch)
+				}()
+				return ch, nil
+			}
+			if req.AccountID == "b@example.com" {
+				bCalled.Store(true)
+				ch := make(chan aistudio.Event, 2)
+				ch <- aistudio.Event{Kind: aistudio.EventText, Text: "from B", ProviderModel: "models/gemini-4-argon-build"}
+				ch <- aistudio.Event{Kind: aistudio.EventFinish, FinishReason: "STOP"}
+				close(ch)
+				return ch, nil
+			}
+			return nil, errors.New("unknown account")
+		},
+	}
+
+	reqReg := newRequestRegistry(context.Background())
+	workerMgr := newAccountWorkerManager(pool, []*aistudio.Account{accA, accB}, reqReg, "", "", time.Minute, 1, 2, 1)
+	defer workerMgr.cancel()
+
+	workerA := makeTestWorker("a@example.com")
+	workerMgr.accounts["a@example.com"].worker = workerA
+	workerMgr.accounts["a@example.com"].warm.Store(true)
+	workerMgr.accounts["a@example.com"].bootstrapModel = "gemini-4-argon-build"
+
+	workerB := makeTestWorker("b@example.com")
+	workerMgr.accounts["b@example.com"].worker = workerB
+	workerMgr.accounts["b@example.com"].warm.Store(true)
+	workerMgr.accounts["b@example.com"].bootstrapModel = "gemini-4-argon-build"
+
+	svc := newTrackedService(context.Background(), mockSvc, pool, reqReg, workerMgr, time.Minute)
+	svc.proxies = aistudio.NewProxyPool(pool, nil)
+	svc.SetBuildStallTimeout(40 * time.Millisecond)
+
+	clientCtx, cancelClient := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelClient()
+	requestCtx := ContextWithPreferredAccountID(context.Background(), "a@example.com")
+	req := aistudio.GenerateRequest{ID: "req-first-event-stall", Model: "gemini-4-argon-build"}
+	dest := make(chan aistudio.Event, 10)
+	callCtx, cancelCall := context.WithCancel(requestCtx)
+
+	svc.generateWithRetry(clientCtx, callCtx, cancelCall, time.Now(), req, "", dest)
+
+	var receivedEvents []aistudio.Event
+	for ev := range dest {
+		receivedEvents = append(receivedEvents, ev)
+	}
+
+	if !aCalled.Load() {
+		t.Errorf("expected account A to be called first")
+	}
+	if !aCancelled.Load() {
+		t.Errorf("expected account A attempt context to be cancelled on stall timeout")
+	}
+	if !bCalled.Load() {
+		t.Errorf("expected failover to account B")
+	}
+
+	// Verify Account A is NOT in pool cooldown
+	cooling, prefCooling, _ := pool.PreferredAccountCoolingStatus(context.Background(), "a@example.com", aistudio.AccountSelection{
+		ModelID: "gemini-4-argon-build",
+		Channel: aistudio.ChannelBuild,
+	})
+	if prefCooling || !cooling.Until.IsZero() {
+		t.Errorf("expected account A NOT to be placed in pool cooldown, got until=%v reason=%s", cooling.Until, cooling.Reason)
+	}
+
+	hasText := false
+	hasFinish := false
+	for _, ev := range receivedEvents {
+		if ev.Kind == aistudio.EventError {
+			t.Fatalf("unexpected error event: %v", ev.Err)
+		}
+		if ev.Kind == aistudio.EventText && ev.Text == "from B" {
+			hasText = true
+		}
+		if ev.Kind == aistudio.EventFinish {
+			hasFinish = true
+		}
+	}
+	if !hasText {
+		t.Errorf("expected EventText from B, got %v", receivedEvents)
+	}
+	if !hasFinish {
+		t.Errorf("expected EventFinish from B, got %v", receivedEvents)
+	}
+}
+
+// TestGenerateWithRetry_BuildPreCommitStreamingStallTimeoutSeamlessFailover 验证 -build 模型在 EventReasoning 后流式停顿超时时取消账户 A，无缝切换至账户 B 在同一目标流中输出
+func TestGenerateWithRetry_BuildPreCommitStreamingStallTimeoutSeamlessFailover(t *testing.T) {
+	argonBuildModel := aistudio.Model{
+		ID:           "gemini-4-argon-build",
+		Methods:      []string{"generateContent"},
+		Capabilities: map[string]bool{"chat_model": true, "assistant_route": true},
+	}
+	accA := &aistudio.Account{
+		ID:     "a@example.com",
+		Config: aistudio.AccountConfig{Enabled: true, Label: "Account A"},
+		State:  aistudio.AccountReady,
+		Models: []aistudio.Model{argonBuildModel},
+	}
+	accB := &aistudio.Account{
+		ID:     "b@example.com",
+		Config: aistudio.AccountConfig{Enabled: true, Label: "Account B"},
+		State:  aistudio.AccountReady,
+		Models: []aistudio.Model{argonBuildModel},
+	}
+
+	pool := aistudio.NewAccountPool([]*aistudio.Account{accA, accB}, 1)
+	pool.SetUpstreamChannels([]aistudio.Channel{aistudio.ChannelBuild})
+	if err := pool.SetBuildCatalog("a@example.com", []aistudio.Model{argonBuildModel}); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.SetBuildCatalog("b@example.com", []aistudio.Model{argonBuildModel}); err != nil {
+		t.Fatal(err)
+	}
+
+	var aCalled, bCalled, aCancelled atomic.Bool
+	mockSvc := &testMockService{
+		onGenerate: func(ctx context.Context, req aistudio.GenerateRequest) (<-chan aistudio.Event, error) {
+			if req.AccountID == "a@example.com" {
+				aCalled.Store(true)
+				ch := make(chan aistudio.Event, 5)
+				ch <- aistudio.Event{Kind: aistudio.EventReasoning, Text: "reasoning from A", ProviderModel: "models/gemini-4-argon-build"}
+				go func() {
+					<-ctx.Done()
+					aCancelled.Store(true)
+					close(ch)
+				}()
+				return ch, nil
+			}
+			if req.AccountID == "b@example.com" {
+				bCalled.Store(true)
+				ch := make(chan aistudio.Event, 5)
+				ch <- aistudio.Event{Kind: aistudio.EventReasoning, Text: "reasoning from B", ProviderModel: "models/gemini-4-argon-build"}
+				ch <- aistudio.Event{Kind: aistudio.EventText, Text: "text from B", ProviderModel: "models/gemini-4-argon-build"}
+				ch <- aistudio.Event{Kind: aistudio.EventFinish, FinishReason: "STOP"}
+				close(ch)
+				return ch, nil
+			}
+			return nil, errors.New("unknown account")
+		},
+	}
+
+	reqReg := newRequestRegistry(context.Background())
+	workerMgr := newAccountWorkerManager(pool, []*aistudio.Account{accA, accB}, reqReg, "", "", time.Minute, 1, 2, 1)
+	defer workerMgr.cancel()
+
+	workerA := makeTestWorker("a@example.com")
+	workerMgr.accounts["a@example.com"].worker = workerA
+	workerMgr.accounts["a@example.com"].warm.Store(true)
+	workerMgr.accounts["a@example.com"].bootstrapModel = "gemini-4-argon-build"
+
+	workerB := makeTestWorker("b@example.com")
+	workerMgr.accounts["b@example.com"].worker = workerB
+	workerMgr.accounts["b@example.com"].warm.Store(true)
+	workerMgr.accounts["b@example.com"].bootstrapModel = "gemini-4-argon-build"
+
+	svc := newTrackedService(context.Background(), mockSvc, pool, reqReg, workerMgr, time.Minute)
+	svc.proxies = aistudio.NewProxyPool(pool, nil)
+	svc.SetBuildStallTimeout(40 * time.Millisecond)
+
+	clientCtx, cancelClient := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelClient()
+	requestCtx := ContextWithPreferredAccountID(context.Background(), "a@example.com")
+	req := aistudio.GenerateRequest{ID: "req-streaming-stall", Model: "gemini-4-argon-build", Unary: false}
+	dest := make(chan aistudio.Event, 10)
+	callCtx, cancelCall := context.WithCancel(requestCtx)
+
+	svc.generateWithRetry(clientCtx, callCtx, cancelCall, time.Now(), req, "", dest)
+
+	var receivedEvents []aistudio.Event
+	for ev := range dest {
+		receivedEvents = append(receivedEvents, ev)
+	}
+
+	if !aCalled.Load() {
+		t.Errorf("expected account A to be called first")
+	}
+	if !aCancelled.Load() {
+		t.Errorf("expected account A attempt context to be cancelled after pre-commit stall")
+	}
+	if !bCalled.Load() {
+		t.Errorf("expected failover to account B")
+	}
+
+	// Verify Account A is NOT in pool cooldown
+	cooling, prefCooling, _ := pool.PreferredAccountCoolingStatus(context.Background(), "a@example.com", aistudio.AccountSelection{
+		ModelID: "gemini-4-argon-build",
+		Channel: aistudio.ChannelBuild,
+	})
+	if prefCooling || !cooling.Until.IsZero() {
+		t.Errorf("expected account A NOT to be placed in pool cooldown, got until=%v reason=%s", cooling.Until, cooling.Reason)
+	}
+
+	if len(receivedEvents) != 4 {
+		t.Fatalf("expected 4 events, got %d: %+v", len(receivedEvents), receivedEvents)
+	}
+	if receivedEvents[0].Kind != aistudio.EventReasoning || receivedEvents[0].Text != "reasoning from A" {
+		t.Errorf("event 0 mismatch: %+v", receivedEvents[0])
+	}
+	if receivedEvents[1].Kind != aistudio.EventReasoning || receivedEvents[1].Text != "reasoning from B" {
+		t.Errorf("event 1 mismatch: %+v", receivedEvents[1])
+	}
+	if receivedEvents[2].Kind != aistudio.EventText || receivedEvents[2].Text != "text from B" {
+		t.Errorf("event 2 mismatch: %+v", receivedEvents[2])
+	}
+	if receivedEvents[3].Kind != aistudio.EventFinish {
+		t.Errorf("event 3 mismatch: %+v", receivedEvents[3])
+	}
+}
