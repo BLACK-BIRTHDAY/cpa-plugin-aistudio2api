@@ -1,0 +1,230 @@
+name: Build Static Dependencies (Windows arm64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Prerelease tag for hosting prebuilt static archives"
+        required: true
+        default: "deps-v1"
+
+permissions:
+  contents: write
+
+env:
+  SPIDERMONKEY_TAG: v152.0.4-aistudio2api.1
+  LIBWEBP_TAG: v1.6.0-aistudio2api.1
+  LLVM_MINGW_VER: "20261020"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  build-windows-arm64:
+    name: Build SpiderMonkey & libwebp (windows-arm64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout Plugin Repo
+        uses: actions/checkout@v4
+
+      - name: Install Host Build Tools & Rust Target
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm make m4 pkg-config cmake ninja-build \
+            python3 python3-venv python3-pip zip xz-utils cbindgen
+          rustup target add aarch64-pc-windows-gnullvm
+          rustc --version
+          cargo --version
+          cbindgen --version
+
+      - name: Setup LLVM-MinGW (${{ env.LLVM_MINGW_VER }})
+        shell: bash
+        run: |
+          curl -fsSL "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VER}/llvm-mingw-${LLVM_MINGW_VER}-ucrt-ubuntu-22.04-x86_64.tar.xz" | tar -xJ -C "$RUNNER_TEMP"
+          echo "LLVM_MINGW=$RUNNER_TEMP/llvm-mingw-${LLVM_MINGW_VER}-ucrt-ubuntu-22.04-x86_64" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/llvm-mingw-${LLVM_MINGW_VER}-ucrt-ubuntu-22.04-x86_64/bin" >> "$GITHUB_PATH"
+
+      - name: Build libwebp (windows-arm64)
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/src-webp" "$RUNNER_TEMP/out-webp"
+          curl -fsSL "https://github.com/Mag1cFall/libwebp/archive/refs/tags/${LIBWEBP_TAG}.tar.gz" | tar -xz --strip-components=1 -C "$RUNNER_TEMP/src-webp"
+          cmake -S "$RUNNER_TEMP/src-webp" -B "$RUNNER_TEMP/build-webp" -G Ninja \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_C_COMPILER="${LLVM_MINGW}/bin/aarch64-w64-mingw32-clang" \
+            -DCMAKE_AR="${LLVM_MINGW}/bin/llvm-ar" \
+            -DCMAKE_RANLIB="${LLVM_MINGW}/bin/llvm-ranlib" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DWEBP_BUILD_ANIM_UTILS=OFF \
+            -DWEBP_BUILD_CWEBP=OFF \
+            -DWEBP_BUILD_DWEBP=OFF \
+            -DWEBP_BUILD_GIF2WEBP=OFF \
+            -DWEBP_BUILD_IMG2WEBP=OFF \
+            -DWEBP_BUILD_VWEBP=OFF \
+            -DWEBP_BUILD_WEBPINFO=OFF \
+            -DWEBP_BUILD_WEBPMUX=OFF \
+            -DWEBP_BUILD_EXTRAS=OFF \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/install-webp"
+          cmake --build "$RUNNER_TEMP/build-webp" -j"$(nproc)"
+          cmake --install "$RUNNER_TEMP/build-webp"
+          mkdir -p "$RUNNER_TEMP/out-webp/include" "$RUNNER_TEMP/out-webp/lib"
+          cp -R "$RUNNER_TEMP/install-webp/include/webp" "$RUNNER_TEMP/out-webp/include/"
+          cp "$RUNNER_TEMP/install-webp/lib/libwebp.a" "$RUNNER_TEMP/out-webp/lib/"
+          cp "$RUNNER_TEMP/install-webp/lib/libsharpyuv.a" "$RUNNER_TEMP/out-webp/lib/"
+          tar -czf "${PWD}/libwebp-${LIBWEBP_TAG}-windows-arm64.tar.gz" -C "$RUNNER_TEMP/out-webp" include lib
+          ls -lh "${PWD}/libwebp-${LIBWEBP_TAG}-windows-arm64.tar.gz"
+
+      - name: Build SpiderMonkey (windows-arm64)
+        shell: bash
+        run: |
+          FF_SRC="$RUNNER_TEMP/firefox-src"
+          mkdir -p "$FF_SRC"
+          curl -fsSL "https://github.com/Mag1cFall/firefox/archive/refs/tags/${SPIDERMONKEY_TAG}.tar.gz" | tar -xz --strip-components=1 -C "$FF_SRC"
+
+          python3 - "$FF_SRC" <<'PY'
+          import pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+
+          init_cfg = root / "build/moz.configure/init.configure"
+          text = init_cfg.read_text(encoding="utf-8")
+          old_os = '''    elif os in ("windows-msvc", "windows-gnu"):
+                  canonical_os = canonical_kernel = "WINNT"
+                  if os == "windows-msvc":
+                      abi = "msvc"
+                  elif os == "windows-gnu":
+                      abi = "mingw"'''
+          new_os = '''    elif os in ("windows-msvc", "windows-gnu", "windows-gnullvm"):
+                  canonical_os = canonical_kernel = "WINNT"
+                  if os == "windows-msvc":
+                      abi = "msvc"
+                  else:
+                      abi = "mingw"
+                  if os == "windows-gnullvm":
+                      os = "windows-gnu"'''
+          assert old_os in text, "init.configure os block not found"
+          text = text.replace(old_os, new_os, 1)
+
+          old_munge = '''    munging = {
+                  "-windows-msvc": "-mingw32",
+                  "-windows-gnu": "-mingw32",
+                  "-ios-sim": "-ios",
+              }'''
+          new_munge = '''    munging = {
+                  "-windows-msvc": "-mingw32",
+                  "-windows-gnu": "-mingw32",
+                  "-windows-gnullvm": "-mingw32",
+                  "-ios-sim": "-ios",
+              }'''
+          assert old_munge in text, "init.configure munging block not found"
+          text = text.replace(old_munge, new_munge, 1)
+          init_cfg.write_text(text, encoding="utf-8")
+
+          rust_cfg = root / "build/moz.configure/rust.configure"
+          rtext = rust_cfg.read_text(encoding="utf-8")
+          old_rust = '''            narrowed = [
+                          c for c in candidates if c.rust_target.endswith("-{}".format(suffix))
+                      ]'''
+          new_rust = '''            suffixes = ("-windows-gnu", "-windows-gnullvm") if suffix == "windows-gnu" else ("-{}".format(suffix),)
+                      narrowed = [
+                          c for c in candidates if c.rust_target.endswith(suffixes)
+                      ]'''
+          assert old_rust in rtext, "rust.configure narrowed block not found"
+          rtext = rtext.replace(old_rust, new_rust, 1)
+          rust_cfg.write_text(rtext, encoding="utf-8")
+          print("Patched init.configure and rust.configure for aarch64-pc-windows-gnullvm")
+          PY
+
+          OBJDIR="$RUNNER_TEMP/sm-obj"
+          cat > "$FF_SRC/mozconfig" <<EOF
+          mk_add_options MOZ_OBJDIR=${OBJDIR}
+          ac_add_options --enable-application=js
+          ac_add_options --target=aarch64-pc-windows-gnu
+          ac_add_options --enable-release
+          ac_add_options --enable-optimize
+          ac_add_options --disable-debug
+          ac_add_options --disable-debug-symbols
+          ac_add_options --disable-shared-js
+          ac_add_options --disable-js-shell
+          ac_add_options --disable-tests
+          ac_add_options --disable-jemalloc
+          ac_add_options --without-system-zlib
+          ac_add_options --with-intl-api
+          export HOST_CC=/usr/bin/clang
+          export HOST_CXX=/usr/bin/clang++
+          export CC=${LLVM_MINGW}/bin/aarch64-w64-mingw32-clang
+          export CXX=${LLVM_MINGW}/bin/aarch64-w64-mingw32-clang++
+          export AR=${LLVM_MINGW}/bin/llvm-ar
+          export RANLIB=${LLVM_MINGW}/bin/llvm-ranlib
+          export NM=${LLVM_MINGW}/bin/llvm-nm
+          export STRIP=${LLVM_MINGW}/bin/llvm-strip
+          export WINDRES=${LLVM_MINGW}/bin/aarch64-w64-mingw32-windres
+          export CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER=${LLVM_MINGW}/bin/aarch64-w64-mingw32-clang
+          EOF
+
+          export MOZBUILD_STATE_PATH="$RUNNER_TEMP/mozbuild"
+          export MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE=none
+          mkdir -p "$MOZBUILD_STATE_PATH"
+          (
+            cd "$FF_SRC"
+            ./mach --no-interactive configure
+            ./mach --no-interactive build -j"$(nproc)"
+          )
+
+          SM_OUT="$RUNNER_TEMP/out-sm"
+          mkdir -p "$SM_OUT/include" "$SM_OUT/lib"
+          cp -RL "$OBJDIR/dist/include/." "$SM_OUT/include/"
+          JS_STATIC=$(find "$OBJDIR" -type f \( -name "libjs_static.a" -o -name "js_static.lib" \) | head -n 1)
+          JS_RUST=$(find "$OBJDIR" -path "*/release/*" -type f \( -name "libjsrust.a" -o -name "jsrust.lib" \) | head -n 1)
+          echo "Found JS_STATIC=$JS_STATIC JS_RUST=$JS_RUST"
+          test -n "$JS_STATIC" && test -n "$JS_RUST"
+          cp "$JS_STATIC" "$SM_OUT/lib/libjs_static.a"
+          cp "$JS_RUST" "$SM_OUT/lib/libjsrust.a"
+          "${LLVM_MINGW}/bin/llvm-strip" --strip-debug "$SM_OUT/lib/libjs_static.a" "$SM_OUT/lib/libjsrust.a" || true
+          tar -czf "${PWD}/spidermonkey-${SPIDERMONKEY_TAG}-windows-arm64.tar.gz" -C "$SM_OUT" include lib
+          ls -lh "${PWD}/spidermonkey-${SPIDERMONKEY_TAG}-windows-arm64.tar.gz"
+          rm -rf "$FF_SRC" "$OBJDIR"
+
+      - name: Setup Go & Smoke-Link Windows arm64 Plugin DLL
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+
+      - name: Verify CGO Build of aistudio2api.dll (windows/arm64)
+        shell: bash
+        run: |
+          export CGO_ENABLED=1
+          export GOOS=windows
+          export GOARCH=arm64
+          export CC="${LLVM_MINGW}/bin/aarch64-w64-mingw32-clang"
+          export CXX="${LLVM_MINGW}/bin/aarch64-w64-mingw32-clang++"
+          export CGO_CPPFLAGS="-I${RUNNER_TEMP}/out-sm/include -I${RUNNER_TEMP}/out-webp/include"
+          export CGO_LDFLAGS="-L${RUNNER_TEMP}/out-sm/lib -L${RUNNER_TEMP}/out-webp/lib"
+          go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o "$RUNNER_TEMP/aistudio2api.dll" ./cmd/aistudio2api-plugin
+          file "$RUNNER_TEMP/aistudio2api.dll"
+          ls -lh "$RUNNER_TEMP/aistudio2api.dll"
+
+      - name: Upload Static Archives to Prerelease Tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          TAG="${{ inputs.release_tag || 'deps-v1' }}"
+          if ! gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "Prebuilt Static Libraries ($TAG)" \
+              --notes "Prebuilt static libraries (SpiderMonkey ${SPIDERMONKEY_TAG} & libwebp ${LIBWEBP_TAG}) cross-compiled for windows-arm64 via llvm-mingw." \
+              --prerelease \
+              --latest=false \
+              --target "${{ github.sha }}" \
+              --repo "${{ github.repository }}"
+          fi
+          gh release upload "$TAG" \
+            "spidermonkey-${SPIDERMONKEY_TAG}-windows-arm64.tar.gz" \
+            "libwebp-${LIBWEBP_TAG}-windows-arm64.tar.gz" \
+            --clobber \
+            --repo "${{ github.repository }}"
