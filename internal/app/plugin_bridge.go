@@ -127,15 +127,7 @@ func (service *trackedService) SetFirstEventHedge(firstEventHedge, firstEventHed
 	if service == nil {
 		return
 	}
-	trimmed := strings.TrimSpace(firstEventHedge)
-	service.hedgeAuto, service.hedgeAfter, _ = config.ParseFirstEventHedge(trimmed)
-	if !service.hedgeAuto && service.hedgeAfter == 0 && trimmed != "" && trimmed != config.FirstEventHedgeOff {
-		if d, err := time.ParseDuration(trimmed); err == nil && d > 0 {
-			service.hedgeAfter = d
-		} else if clean := strings.TrimSuffix(strings.ToLower(trimmed), "s"); clean != "" {
-			service.hedgeAuto, service.hedgeAfter, _ = config.ParseFirstEventHedge(clean)
-		}
-	}
+	service.hedgeAuto, service.hedgeAfter, _ = config.ParseFirstEventHedge(firstEventHedge)
 	service.hedgeModels = config.ModelList(firstEventHedgeModels)
 }
 
