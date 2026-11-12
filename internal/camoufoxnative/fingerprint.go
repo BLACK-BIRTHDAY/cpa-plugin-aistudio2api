@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/brainplusplus/go-browserforge/fingerprints"
+	bfheaders "github.com/brainplusplus/go-browserforge/headers"
 	"maps"
 	"math"
 	"math/rand/v2"
@@ -15,8 +17,6 @@ import (
 	"strings"
 	"time"
 	"unicode"
-	"github.com/brainplusplus/go-browserforge/fingerprints"
-	bfheaders "github.com/brainplusplus/go-browserforge/headers"
 )
 
 var firefoxVersionPattern = regexp.MustCompile(`\b1[0-9]{2}\.0\b`)

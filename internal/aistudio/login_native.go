@@ -103,6 +103,7 @@ const pageInspectExpression = `(() => {
     href: location.href || ''
   });
 })()`
+
 // NativeLoginDriver 通过启动本机 Chrome/Edge/Brave 的独立无痕窗口（--incognito + 临时 --user-data-dir）完成 AI Studio 登录并自动拉取凭证
 type NativeLoginDriver struct {
 	chromePath string
@@ -672,7 +673,6 @@ func cdpCloseBrowser(ctx context.Context, pageWS string) error {
 	return cdpCall(ctx, conn, 99, "Browser.close", map[string]any{}, &out)
 }
 
-
 const stealthInitScript = `(() => {
   try {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -772,6 +772,7 @@ const driveApproveButtonExpr = `(() => {
     return /^(Allow|Continue|允许|继续)$/i.test(text);
   }) || null;
 })()`
+
 func authorizeDriveOverCDP(
 	ctx context.Context,
 	httpClient *http.Client,

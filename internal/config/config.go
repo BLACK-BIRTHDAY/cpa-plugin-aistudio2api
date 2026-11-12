@@ -677,17 +677,20 @@ func (c Config) Validate() error {
 
 // ParseFirstEventHedge 解析 FIRST_EVENT_HEDGE，返回是否按近期 p95 自适应与自定义的等待时长，off 时都为零值
 func ParseFirstEventHedge(value string) (bool, time.Duration, error) {
-	switch value {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	switch trimmed {
 	case FirstEventHedgeOff:
 		return false, 0, nil
 	case FirstEventHedgeAuto:
 		return true, 0, nil
 	}
-	seconds, err := strconv.Atoi(value)
-	if err != nil || seconds <= 0 {
-		return false, 0, fmt.Errorf("FIRST_EVENT_HEDGE 必须是 off、auto 或正整数秒")
+	if seconds, err := strconv.Atoi(trimmed); err == nil && seconds > 0 {
+		return false, time.Duration(seconds) * time.Second, nil
 	}
-	return false, time.Duration(seconds) * time.Second, nil
+	if d, err := time.ParseDuration(trimmed); err == nil && d > 0 {
+		return false, d, nil
+	}
+	return false, 0, fmt.Errorf("FIRST_EVENT_HEDGE 必须是 off、auto 或正整数秒")
 }
 
 // ModelList 解析逗号分隔的模型 ID 列表

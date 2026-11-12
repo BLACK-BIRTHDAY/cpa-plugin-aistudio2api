@@ -4,34 +4,35 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/Mag1cFall/AIStudio2API/internal/api"
+	"github.com/Mag1cFall/AIStudio2API/internal/app"
+	"github.com/Mag1cFall/AIStudio2API/internal/config"
+	"github.com/Mag1cFall/AIStudio2API/internal/pluginabi"
+	"github.com/Mag1cFall/AIStudio2API/internal/pluginapi"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	"github.com/Mag1cFall/AIStudio2API/internal/api"
-	"github.com/Mag1cFall/AIStudio2API/internal/app"
-	"github.com/Mag1cFall/AIStudio2API/internal/config"
-	"github.com/Mag1cFall/AIStudio2API/internal/pluginabi"
-	"github.com/Mag1cFall/AIStudio2API/internal/pluginapi"
 )
 
 type HostCallFunc func(method string, payload []byte) ([]byte, error)
 
 type Plugin struct {
-	mu           sync.RWMutex
-	ctx          context.Context
-	cancel       context.CancelFunc
-	pluginCfg    PluginConfig
-	appCfg       config.Config
-	runtime      *app.PluginRuntime
-	hostCall     HostCallFunc
+	mu              sync.RWMutex
+	ctx             context.Context
+	cancel          context.CancelFunc
+	pluginCfg       PluginConfig
+	appCfg          config.Config
+	runtime         *app.PluginRuntime
+	hostCall        HostCallFunc
 	loginStateMu    sync.Mutex
 	loginStates     map[string]*loginSessionState
 	excludedMu      sync.RWMutex
 	accountExcluded map[string][]string
 	hostExcluded    map[string][]string
+	hostAliases     map[string][]pluginapi.ModelAlias
 	hostAuthDir     string
 	chromeLogin     sync.Mutex
 	serviceStopped  atomic.Bool
@@ -68,6 +69,9 @@ func (p *Plugin) SetHostCall(fn HostCallFunc) {
 func (p *Plugin) updateHostConfig(host pluginapi.HostConfigSummary) {
 	if len(host.ExcludedModels) > 0 {
 		p.setHostExcludedModels(host.ExcludedModels)
+	}
+	if len(host.OAuthModelAlias) > 0 {
+		p.setHostModelAliases(host.OAuthModelAlias)
 	}
 	authDir := strings.TrimSpace(host.AuthDir)
 	if strings.HasPrefix(authDir, "~/") {
@@ -386,7 +390,7 @@ func (p *Plugin) applyConfig(configYAML []byte, isReload bool) error {
 			return rtErr
 		}
 		p.runtime = rt
-	} else if isReload {
+	} else {
 		rt.ApplyLiveConfig(cfg)
 	}
 	p.mu.Unlock()
@@ -427,6 +431,7 @@ func (p *Plugin) handleShutdown() (any, error) {
 	p.excludedMu.Lock()
 	clear(p.accountExcluded)
 	clear(p.hostExcluded)
+	clear(p.hostAliases)
 	p.hostAuthDir = ""
 	p.excludedMu.Unlock()
 	if syncAuth && rt != nil {
