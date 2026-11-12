@@ -288,10 +288,10 @@ func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
 		if b, err := strconv.ParseBool(env); err == nil {
 			cfg.AssistantFallback = b
 		} else {
-			cfg.AssistantFallback = true
+			cfg.AssistantFallback = false
 		}
 	} else {
-		cfg.AssistantFallback = true
+		cfg.AssistantFallback = false
 	}
 	cfg.SearchModelAliases = boolOrDefault(pcfg.SearchModelAliases, true)
 	cfg.GoogleSearch = boolOrDefault(pcfg.GoogleSearch, false)

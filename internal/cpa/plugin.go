@@ -352,7 +352,7 @@ func (p *Plugin) registrationPayload() rpcRegistration {
 				{
 					Name:        "assistant_fallback",
 					Type:        pluginapi.ConfigFieldTypeBoolean,
-					Default:     true,
+					Default:     false,
 					Description: "Playground 账户全量配额冷却时自动回退至 Assistant (-build) 通道",
 				},
 			},

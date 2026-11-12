@@ -18,8 +18,20 @@ _Avoid_: Desktop EXE, Windows installer, client binary
 The rolling GitHub Release named `v<version>` (matching `PluginVersion` and `registry.json`) that is deleted, re-tagged at `HEAD`, and recreated on each `main` build so `CLIProxyAPI` plugin store clients resolve valid semver tags and matching asset filenames (`aistudio2api_<version>_<goos>_<goarch>.zip` and `checksums.txt`).
 _Avoid_: `latest`-tag release, unversioned release, draft release
 
+**Core Upstream (`Mag1cFall/AIStudio2API`)**:
+The canonical standalone AI Studio proxy repository that owns `internal/aistudio`, `internal/api`, `internal/app`, `internal/config`, and `internal/waa`.
+_Avoid_: Standalone repo, base repo, generic upstream
+
+**Plugin Upstream (`jianli9158/cpa-plugin-aistudio2api`)**:
+The upstream CLIProxyAPI C-ABI plugin repository that wraps Core Upstream with `internal/cpa` and `internal/app/plugin_bridge.go` and periodically synchronizes with Core Upstream releases.
+_Avoid_: Upstream fork, plugin base
+
+**Upstream-First Convergence**:
+The governance model where all general protocol, scheduling, and recovery capabilities are contributed directly to Core Upstream (`Mag1cFall/AIStudio2API`) and C-ABI host bridge adaptations are contributed to Plugin Upstream (`jianli9158/cpa-plugin-aistudio2api`), eliminating local feature divergence in `BLACK-BIRTHDAY/cpa-plugin-aistudio2api`.
+_Avoid_: Local patch maintenance, long-lived feature fork
+
 **Upstream Sync Cycle**:
-A scheduled or manually dispatched reconciliation workflow that merges upstream `jianli9158/cpa-plugin-aistudio2api` changes, runs CGO build and unit test verification gates (with Agentic Conflict Resolution on failure), and chains into an In-Place Version Release.
+A scheduled or manually dispatched reconciliation workflow that synchronizes `BLACK-BIRTHDAY/cpa-plugin-aistudio2api` with Plugin Upstream (`jianli9158/cpa-plugin-aistudio2api`), runs CGO build and unit test verification gates, and chains into an In-Place Version Release.
 _Avoid_: Manual cherry-pick, blind force-merge
 
 ### Stream Recovery and Tool Calling

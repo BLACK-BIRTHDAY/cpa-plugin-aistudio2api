@@ -530,12 +530,12 @@ func TestParsePluginConfigHedgeAndAssistantFallback(t *testing.T) {
 	if cfgDef.FirstEventHedgeModels != "gemini-4-argon,gemini-3.8-flash" {
 		t.Fatalf("expected default FirstEventHedgeModels=gemini-4-argon,gemini-3.8-flash, got %q", cfgDef.FirstEventHedgeModels)
 	}
-	if !cfgDef.AssistantFallback {
-		t.Fatalf("expected default AssistantFallback=true")
+	if cfgDef.AssistantFallback {
+		t.Fatalf("expected default AssistantFallback=false")
 	}
 
 	// 2. Explicit top-level config
-	topYAML := []byte("first_event_hedge_models: gemini-4-argon\nassistant_fallback: false\n")
+	topYAML := []byte("first_event_hedge_models: gemini-4-argon\nassistant_fallback: true\n")
 	pcfgTop, cfgTop, err := cpa.ParsePluginConfig(topYAML)
 	if err != nil {
 		t.Fatalf("ParsePluginConfig top error: %v", err)
@@ -543,12 +543,12 @@ func TestParsePluginConfigHedgeAndAssistantFallback(t *testing.T) {
 	if pcfgTop.FirstEventHedgeModels != "gemini-4-argon" || cfgTop.FirstEventHedgeModels != "gemini-4-argon" {
 		t.Fatalf("expected FirstEventHedgeModels=gemini-4-argon, got %q", cfgTop.FirstEventHedgeModels)
 	}
-	if pcfgTop.AssistantFallback == nil || *pcfgTop.AssistantFallback || cfgTop.AssistantFallback {
-		t.Fatalf("expected AssistantFallback=false, got pcfg=%v cfg=%v", pcfgTop.AssistantFallback, cfgTop.AssistantFallback)
+	if pcfgTop.AssistantFallback == nil || !*pcfgTop.AssistantFallback || !cfgTop.AssistantFallback {
+		t.Fatalf("expected AssistantFallback=true, got pcfg=%v cfg=%v", pcfgTop.AssistantFallback, cfgTop.AssistantFallback)
 	}
 
 	// 3. Merged from options
-	optYAML := []byte("options:\n  first_event_hedge_models: gemini-3.8-flash\n  assistant_fallback: false\n")
+	optYAML := []byte("options:\n  first_event_hedge_models: gemini-3.8-flash\n  assistant_fallback: true\n")
 	pcfgOpt, cfgOpt, err := cpa.ParsePluginConfig(optYAML)
 	if err != nil {
 		t.Fatalf("ParsePluginConfig opt error: %v", err)
@@ -556,8 +556,8 @@ func TestParsePluginConfigHedgeAndAssistantFallback(t *testing.T) {
 	if pcfgOpt.FirstEventHedgeModels != "gemini-3.8-flash" || cfgOpt.FirstEventHedgeModels != "gemini-3.8-flash" {
 		t.Fatalf("expected FirstEventHedgeModels=gemini-3.8-flash, got %q", cfgOpt.FirstEventHedgeModels)
 	}
-	if pcfgOpt.AssistantFallback == nil || *pcfgOpt.AssistantFallback || cfgOpt.AssistantFallback {
-		t.Fatalf("expected AssistantFallback=false via options")
+	if pcfgOpt.AssistantFallback == nil || !*pcfgOpt.AssistantFallback || !cfgOpt.AssistantFallback {
+		t.Fatalf("expected AssistantFallback=true via options")
 	}
 }
 

@@ -177,7 +177,7 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 		if resp, _, matched := pickFromClassifiedGroups(groups); matched {
 			return resp, nil
 		} else if totalEligible := len(groups.WarmReady) + len(groups.StandbyReady) + len(groups.WarmAvailable) + len(groups.StandbyBusy) + len(groups.WarmBusy); totalEligible == 0 {
-			if boolOrDefault(p.Config().AssistantFallback, true) && !strings.HasSuffix(cleanModel, "-build") && rt.Pool().AssistantModel(cleanModel+"-build") {
+			if boolOrDefault(p.Config().AssistantFallback, false) && !strings.HasSuffix(cleanModel, "-build") && rt.Pool().AssistantModel(cleanModel+"-build") {
 				fallbackSelection := aistudio.AccountSelection{
 					ModelID:           cleanModel + "-build",
 					Method:            "generateContent",

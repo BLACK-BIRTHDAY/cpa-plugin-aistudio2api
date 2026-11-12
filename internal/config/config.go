@@ -181,7 +181,7 @@ func Default() Config {
 		SearchModelAliases:     true,
 		FirstEventHedge:        FirstEventHedgeAuto,
 		FirstEventHedgeModels:  DefaultFirstEventHedgeModels,
-		AssistantFallback:      true,
+		AssistantFallback:      false,
 		ContinuationRewrite:    true,
 		ContinuationPrompt:     DefaultContinuationPrompt,
 		AuthStates:             defaultAuthStates,
