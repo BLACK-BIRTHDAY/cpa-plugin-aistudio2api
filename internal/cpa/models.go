@@ -491,6 +491,14 @@ func defaultFallbackModels() []aistudio.Model {
 			InputTokenLimit:  8192,
 			OutputTokenLimit: 3072,
 		},
+		{
+			ID:               "models/gemini-decision-1",
+			Name:             "Gemini Decision 1",
+			Description:      "Google AI Studio Gemini Decision model for noul, choice, and score questions",
+			Methods:          []string{"createDecision"},
+			InputTokenLimit:  1048576,
+			OutputTokenLimit: 0,
+		},
 	}
 }
 

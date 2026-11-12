@@ -209,6 +209,8 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 func inferUpstreamMethodForModel(modelID string) string {
 	lower := strings.ToLower(strings.TrimSpace(modelID))
 	switch {
+	case strings.Contains(lower, "decision"):
+		return "createDecision"
 	case strings.Contains(lower, "embedding"):
 		return "embedContent"
 	case strings.Contains(lower, "veo"):

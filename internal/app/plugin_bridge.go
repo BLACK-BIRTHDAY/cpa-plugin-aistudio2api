@@ -23,6 +23,7 @@ func WithPinnedAccountID(ctx context.Context, accountID string) context.Context 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = aistudio.ContextWithAccount(ctx, accountID)
 	return context.WithValue(ctx, pinnedAccountContextKey{}, accountID)
 }
 

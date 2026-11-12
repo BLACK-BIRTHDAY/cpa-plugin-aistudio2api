@@ -13,7 +13,7 @@ import (
 
 const (
 	PluginID      = "aistudio2api"
-	PluginVersion = "1.2.2"
+	PluginVersion = "1.2.3"
 	ProviderID    = "aistudio2api"
 )
 
