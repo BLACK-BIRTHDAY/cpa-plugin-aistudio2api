@@ -983,7 +983,19 @@ function renderAccounts(accounts, cooldowns) {
         '</div>'
       );
     }
-    if (rawMsg && !accCooldowns.some(c => c.reason === rawMsg)) {
+    if (acc.state === 'restricted' && rawMsg) {
+      const urlMatch = rawMsg.match(/https:\/\/[^\s)]+/);
+      const linkHtml = urlMatch
+        ? '<div style="margin-top:4px;"><a href="' + escapeHtml(urlMatch[0]) + '" target="_blank" rel="noopener noreferrer" style="color:#93c5fd; font-size:11px; text-decoration:underline;">打开官网页面查看 / 验证 &rarr;</a></div>'
+        : '';
+      detailParts.unshift(
+        '<div class="cooldown-pill-box" style="border-color:var(--danger-border); background:var(--danger-bg);">' +
+          '<div class="cooldown-pill-top"><strong style="color:#fca5a5;">服务受限</strong></div>' +
+          '<div class="cooldown-pill-reason" style="color:#fecaca;">' + escapeHtml(rawMsg) + '</div>' +
+          linkHtml +
+        '</div>'
+      );
+    } else if (rawMsg && !accCooldowns.some(c => c.reason === rawMsg)) {
       detailParts.push('<div style="color:var(--muted); font-size:12px; max-width:260px;">' + escapeHtml(rawMsg) + '</div>');
     }
     const detailHtml = detailParts.length ? detailParts.join('') : '<span style="color:var(--muted);">正常就绪</span>';

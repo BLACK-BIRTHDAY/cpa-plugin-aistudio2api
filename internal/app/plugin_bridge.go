@@ -188,10 +188,13 @@ func (rt *PluginRuntime) ApplyLiveConfig(cfg config.Config) {
 	if ts, ok := cur.service.(*trackedService); ok && ts != nil {
 		ts.SetFirstEventHedge(cfg.FirstEventHedge, cfg.FirstEventHedgeModels)
 		ts.buildNativeNonstream = cfg.BuildNativeNonstream
+		ts.maxAccountSwitches = cfg.MaxAccountSwitches
+		ts.discoverHiddenModels = cfg.DiscoverHiddenModels
 		ts.modelMapping, _ = config.ParseModelMapping(cfg.ModelMapping)
 		if pooled, ok := ts.service.(*aistudio.PooledService); ok && pooled != nil {
 			pooled.BuildNativeNonstream = cfg.BuildNativeNonstream
 			pooled.YouTubeLinks = cfg.YouTubeLinks
+			pooled.DiscoverHiddenModels = cfg.DiscoverHiddenModels
 			pooled.StripThoughtSignatures = cfg.StripThoughtSignatures
 			pooled.ContinuationRewrite = cfg.ContinuationRewrite
 			pooled.ContinuationPrompt = cfg.ContinuationPrompt

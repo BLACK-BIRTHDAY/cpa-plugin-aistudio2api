@@ -213,8 +213,6 @@ func (p *Plugin) isKnownModel(modelID string) bool {
 		clean = base
 	}
 	clean = strings.TrimSuffix(clean, "-search")
-	clean = strings.TrimSuffix(clean, "-build")
-	clean = strings.TrimSuffix(clean, "-search")
 	if base, _, err := aistudio.ApplyModelSuffix(clean, aistudio.GenerationConfig{}); err == nil && base != "" {
 		clean = base
 	}
@@ -270,7 +268,7 @@ func (p *Plugin) collectCatalogModelsForAccount(accountID string) []pluginapi.Mo
 		if info.ID == "" {
 			continue
 		}
-		// Register canonical unprefixed model ID (e.g., "gemini-3.8-flash", "gemini-3.8-flash-build")
+		// Register canonical unprefixed model ID (e.g., "gemini-3.8-flash")
 		addModel(info)
 
 		// Register -search alias for models supporting Google Search grounding

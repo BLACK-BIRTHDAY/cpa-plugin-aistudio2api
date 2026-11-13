@@ -75,7 +75,7 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 	candidateByAccount := make(map[string]string, len(aistudioCandidates))
 	var poolFallbackCandidateID string
 	for _, cand := range aistudioCandidates {
-		if strings.EqualFold(cand.Status, "disabled") || strings.EqualFold(cand.Status, "unavailable") {
+		if strings.EqualFold(cand.Status, "disabled") || strings.EqualFold(cand.Status, "unavailable") || strings.EqualFold(cand.Status, "restricted") {
 			continue
 		}
 		accID := extractAccountIDFromAuth(nil, cand.Metadata, cand.Attributes)
@@ -167,10 +167,14 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 
 		// If all accounts in the pool are cooling down for this model and cooldown exceeds 60s, report 429 cooldown
 		if totalEligible == 0 && !groups.EarliestCooldown.Until.IsZero() && time.Until(groups.EarliestCooldown.Until) > time.Minute {
+			rejectCode := "rate_limit_exceeded"
+			if strings.HasPrefix(groups.EarliestCooldown.Reason, aistudio.AccountRejectionKind) {
+				rejectCode = "account_unavailable"
+			}
 			return pluginapi.SchedulerPickResponse{
 				Handled:      true,
 				Reject:       true,
-				RejectCode:   "rate_limit_exceeded",
+				RejectCode:   rejectCode,
 				RejectReason: fmt.Sprintf("all AI Studio accounts for model %s are cooling down until %s (%s)", cleanModel, groups.EarliestCooldown.Until.Format(time.RFC3339), groups.EarliestCooldown.Reason),
 			}, nil
 		}
@@ -182,7 +186,7 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 
 	// Fallback: match any ready/busy account from Pool.Status()
 	for _, st := range rt.Pool().Status() {
-		if !st.Enabled || st.State == aistudio.AccountCooldown || st.State == aistudio.AccountAuthRequired {
+		if !st.Enabled || st.State == aistudio.AccountCooldown || st.State == aistudio.AccountAuthRequired || st.State == aistudio.AccountRestricted || st.State == aistudio.AccountUnavailable {
 			continue
 		}
 		if authID, ok := candidateByAccount[strings.ToLower(strings.TrimSpace(st.ID))]; ok && authID != "" {
@@ -313,9 +317,9 @@ func (p *Plugin) handleQuotaFetch(raw []byte) (any, error) {
 			}
 		}
 
-		if matched.State == aistudio.AccountAuthRequired || !matched.Enabled {
+		if matched.State == aistudio.AccountAuthRequired || matched.State == aistudio.AccountRestricted || !matched.Enabled {
 			remaining = 0.0
-			desc = "账户需要重新登录或已停用"
+			desc = "账户需要重新登录、服务受限或已停用"
 			if matched.Message != "" {
 				desc = matched.Message
 			}

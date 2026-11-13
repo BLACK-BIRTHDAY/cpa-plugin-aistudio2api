@@ -655,12 +655,14 @@ func sameDataConfig(value api.RuntimeConfig, active config.Config, overrides dat
 		InitTimeout: initTimeout, RequestTimeout: requestTimeout, StripThoughtSignatures: value.StripThoughtSignatures,
 		UpstreamChannels:      value.UpstreamChannels,
 		ModelMapping:          value.ModelMapping,
+		MaxAccountSwitches:    value.MaxAccountSwitches,
 		WAABackend:            value.WAABackend,
 		BuildNativeNonstream:  value.BuildNativeNonstream,
 		NonstreamKeepalive:    value.NonstreamKeepalive,
 		FakeStream:            value.FakeStream,
 		YouTubeLinks:          value.YouTubeLinks,
 		SearchModelAliases:    value.SearchModelAliases,
+		DiscoverHiddenModels:  value.DiscoverHiddenModels,
 		GoogleSearch:          value.GoogleSearch,
 		FirstEventHedge:       value.FirstEventHedge,
 		FirstEventHedgeModels: value.FirstEventHedgeModels,
@@ -673,11 +675,12 @@ func sameDataConfig(value api.RuntimeConfig, active config.Config, overrides dat
 	return saved.AuthStates == active.AuthStates && saved.Proxy == active.Proxy &&
 		saved.InitTimeout == active.InitTimeout && saved.RequestTimeout == active.RequestTimeout &&
 		slices.Equal(saved.UpstreamChannels, active.UpstreamChannels) && saved.ModelMapping == active.ModelMapping &&
+		saved.MaxAccountSwitches == active.MaxAccountSwitches &&
 		saved.WAABackend == active.WAABackend &&
 		saved.BuildNativeNonstream == active.BuildNativeNonstream &&
 		saved.NonstreamKeepalive == active.NonstreamKeepalive && saved.FakeStream == active.FakeStream &&
 		saved.YouTubeLinks == active.YouTubeLinks && saved.StripThoughtSignatures == active.StripThoughtSignatures && saved.FirstEventHedge == active.FirstEventHedge && saved.FirstEventHedgeModels == active.FirstEventHedgeModels &&
-		saved.SearchModelAliases == active.SearchModelAliases && saved.GoogleSearch == active.GoogleSearch &&
+		saved.SearchModelAliases == active.SearchModelAliases && saved.DiscoverHiddenModels == active.DiscoverHiddenModels && saved.GoogleSearch == active.GoogleSearch &&
 		saved.ContinuationRewrite == active.ContinuationRewrite && saved.ContinuationPrompt == active.ContinuationPrompt &&
 		saved.MediaOutput == active.MediaOutput && saved.MediaBaseURL == active.MediaBaseURL
 }

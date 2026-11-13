@@ -1,6 +1,8 @@
 package waa
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/waa/mozjs"
@@ -33,5 +35,40 @@ func TestCamouLocaleSanitizationAndContextInit(t *testing.T) {
 		cx.Interrupt()
 		cx.Close()
 		cx.Interrupt()
+	}
+}
+
+func TestFirefox158ShapeAndRealmInit(t *testing.T) {
+	shape, err := firefoxShapeJSON()
+	if err != nil {
+		t.Fatalf("firefoxShapeJSON() error: %v", err)
+	}
+	if !strings.Contains(shape, "Firefox/158.0") {
+		t.Fatalf("expected Firefox/158.0 in firefoxShapeJSON")
+	}
+	rt, err := NewRuntime(context.Background(), Options{
+		Challenge: Challenge{
+			Program:         "prog",
+			GlobalName:      "WAA_TEST",
+			InterpreterURL:  "https://www.google.com/js/bg/test.js",
+			InterpreterHash: "test",
+		},
+		Interpreter: `window.WAA_TEST = { a: function(prog, cb) { cb(function(done, opts) { done("ok:" + navigator.userAgent); }); } };`,
+		Profile: Profile{
+			PageURL:  "https://aistudio.google.com/prompts/new_chat",
+			Locale:   "en-US",
+			TimeZone: "America/Los_Angeles",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error: %v", err)
+	}
+	defer rt.Close()
+	token, err := rt.Proof(context.Background(), "digest", "hello")
+	if err != nil {
+		t.Fatalf("Proof() error: %v", err)
+	}
+	if !strings.Contains(token, "Firefox/158.0") {
+		t.Fatalf("unexpected token: %q", token)
 	}
 }

@@ -19,16 +19,16 @@
 ## 核心特性
 
 - **进程内 SpiderMonkey BotGuard WAA 引擎**：直接将 Firefox 152 SpiderMonkey C++ 引擎静态链接进动态库（`.dylib` / `.so` / `.dll`），在 CLIProxyAPI 进程内毫秒级完成 Google BotGuard WAA 字节码解释与签名生成，无需安装 Python、Node.js、Playwright 或无头浏览器。
-- **Playground + Build 双通道完整支持**：
-  - **Playground 通道**（`MakerSuiteService/GenerateContent`）：支持 `gemini-3.8-flash`、`gemini-4-argon`、`gemini-2.5-pro`、`gemini-2.5-flash`、Imagen、Veo、TTS 等全部模型。
-  - **Build 通道**（`MakerSuiteService/CodeAssistantOffline`）：支持 `gemini-3.8-flash-build`、`gemini-3.1-pro-preview-build` 等 `-build` 后缀模型，以及 Build 独有模型（合计自动发现 50+ 模型）。
+- **Playground + Build 通道完整支持**：
+  - **Playground 通道**（`MakerSuiteService/GenerateContent`）：支持 `gemini-3.8-flash`、`gemini-4-argon`、`gemini-2.5-pro`、`gemini-2.5-flash`、Imagen、Veo、TTS、Decision 等全部模型及思考等级后缀（`-minimal` / `-low` / `-medium` / `-high` / `-xhigh` / `-max`）。
+  - **Build 代理通道**：保留旧 Build 代理通道并支持通过官网前端隐藏列表发现未公开模型（已移除高风险 `-build` 代码助手模型派生以保障账户安全）。
 - **四协议原生输入输出**：同时支持 `chat-completions`（OpenAI Chat）、`responses`（OpenAI Responses）、`anthropic`（Claude Messages）与 `gemini`（Google Gemini Native）请求/流式响应。
 - **全套 CLIProxyAPI 插件能力接入（9 大能力）**：
   1. `auth_provider`：支持在 ECPA / CPA 控制台直接点击 **「开始登录」** 一键拉起本机独立 Chrome 窗口完成 OAuth 登录与自动轮询（`auth.login_start` / `auth.login_poll`），并 1 对 1 自动同步至 `~/.cli-proxy-api/aistudio2api-<email>.json`。
-  2. `model_provider`：静态目录 + 按账户动态发现 Playground 与 Build 模型目录。
-  3. `model_router`：支持 `aistudio/<model>` 前缀及无前缀模型名（如 `gemini-3.8-flash`、`gemini-3.8-flash-build`）自动路由。
-  4. `scheduler`：复用 AIStudio2API 原生 `AccountPool` 权益分级（Paid / Free）、并发度与冷却感知调度。
-  5. `executor`：同步/流式生成、Build 原生工具调用、Token 计数（SentencePiece + 上游 `CountTokens`）与多模态媒体透传。
+  2. `model_provider`：静态目录 + 按账户动态发现 Playground 与隐藏模型目录。
+  3. `model_router`：支持 `aistudio/<model>` 前缀及无前缀模型名（如 `gemini-3.8-flash`、`gemini-4-argon`）自动路由。
+  4. `scheduler`：复用 AIStudio2API 原生 `AccountPool` 权益分级（Paid / Free）、受限账户识别、并发度与冷却感知调度。
+  5. `executor`：同步/流式生成、工具调用自动续写、Token 计数（SentencePiece + 上游 `CountTokens`）与多模态媒体透传。
   6. `request_lifecycle_plugin`：跟踪请求完成度与状态码。
   7. `quota_provider`：在 CPA 控制台实时展示账户权益等级、可用模型数与冷却恢复倒计时，支持一键重置冷却。
   8. `command_line_plugin`：扩展 `--aistudio2api-status` 与 `--aistudio2api-login` 命令行参数。
@@ -59,12 +59,12 @@ flowchart LR
 
 ### 方式二：从 GitHub Releases 下载预编译包
 1. 前往 [Releases](https://github.com/jianli9158/cpa-plugin-aistudio2api/releases) 下载对应平台的压缩包：
-   - macOS Apple Silicon: `aistudio2api_1.2.3_darwin_arm64.zip`
-   - macOS Intel: `aistudio2api_1.2.3_darwin_amd64.zip`
-   - Linux x86_64: `aistudio2api_1.2.3_linux_amd64.zip`
-   - Linux ARM64: `aistudio2api_1.2.3_linux_arm64.zip`
-   - Windows x86_64: `aistudio2api_1.2.3_windows_amd64.zip`
-   - Windows ARM64: `aistudio2api_1.2.3_windows_arm64.zip`
+   - macOS Apple Silicon: `aistudio2api_1.2.4_darwin_arm64.zip`
+   - macOS Intel: `aistudio2api_1.2.4_darwin_amd64.zip`
+   - Linux x86_64: `aistudio2api_1.2.4_linux_amd64.zip`
+   - Linux ARM64: `aistudio2api_1.2.4_linux_arm64.zip`
+   - Windows x86_64: `aistudio2api_1.2.4_windows_amd64.zip`
+   - Windows ARM64: `aistudio2api_1.2.4_windows_arm64.zip`
 2. 解压出动态库文件（`aistudio2api.dylib` / `aistudio2api.so` / `aistudio2api.dll`），放入 CLIProxyAPI 的插件目录：
    ```text
    plugins/<goos>/<goarch>/aistudio2api.{dylib,so,dll}
@@ -125,9 +125,12 @@ plugins:
 | `fake_stream` | `bool` | `false` | 伪流式开关：开启后向上游使用非流式完整收集响应后再向客户端流式下发事件 |
 | `model_aliases` | `string` | `""` | 插件级模型别名映射，逗号分隔 `别名:原模型ID` 或 `别名=原模型ID`（如 `my-argon:gemini-4-argon,my-flash:gemini-3.8-flash-preview`） |
 | `account_order` | `string` | `""` | `fill-first` 策略下优先使用的账户顺序（逗号或空格分隔的账户邮箱 ID） |
+| `max_account_switches` | `int` | `3` | 单次请求因额度或临时故障最多切换的额外账户数（`0` 表示不切换账户） |
+| `discover_hidden_models` | `bool` | `false` | 是否从官网前端脚本探测并加入账户未公开的隐藏模型 |
 | `model_accounts` | `string` | `""` | 逗号分隔的模型绑定账户映射（格式 `模型ID:账户1\|账户2`，如 `gemini-3.1-pro-preview:a@gmail.com\|b@gmail.com`） |
-| `upstream_channels` | `[]string` | `["playground"]` | 启用的上游通道（默认 `["playground"]`，如需开启 Build 通道可设为 `["playground", "build"]`） |
-| `first_event_hedge` | `string` | `"gemini-4-argon"` | 首包超时并发备用请求策略（默认对 `gemini-4-argon` 开启，`off` 关闭） |
+| `upstream_channels` | `[]string` | `["playground"]` | 启用的上游通道（默认 `["playground"]`，如需开启 Build 代理通道可设为 `["playground", "build"]`） |
+| `first_event_hedge` | `string` | `"auto"` | 首包超时并发备用请求策略（`auto` 按近期首包耗时自适应，或填写秒数如 `"6s"`，`off` 关闭） |
+| `first_event_hedge_models` | `string` | `"gemini-4-argon"` | 启用首包并发备用请求的目标模型列表（逗号分隔，`*` 表示全部模型） |
 
 ---
 
@@ -205,12 +208,12 @@ curl http://127.0.0.1:8317/v1/chat/completions \
     "stream": true
   }'
 
-# 调用 Build 通道模型 (gemini-3.8-flash-build)
+# 调用高思考等级模型 (gemini-4-argon-xhigh)
 curl http://127.0.0.1:8317/v1/chat/completions \
   -H "Authorization: Bearer YOUR_CPA_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gemini-3.8-flash-build",
+    "model": "gemini-4-argon-xhigh",
     "messages": [{"role": "user", "content": "Hello!"}],
     "stream": true
   }'
