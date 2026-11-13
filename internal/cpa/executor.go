@@ -122,6 +122,13 @@ func (p *Plugin) buildInternalHTTPRequest(
 		}
 		lowerModel := strings.ToLower(cleanModel)
 		switch {
+		case gjson.GetBytes(body, "questions").Exists():
+			targetPath = "/v1beta/decisions"
+			if len(body) > 0 && cleanModel != "" {
+				if updated, err := sjson.SetBytes(body, "model", cleanModel); err == nil {
+					body = updated
+				}
+			}
 		case gjson.GetBytes(body, "instances").Exists():
 			if strings.Contains(lowerModel, "veo") {
 				targetPath = "/v1beta/models/" + cleanModel + ":predictLongRunning"
@@ -170,6 +177,13 @@ func (p *Plugin) buildInternalHTTPRequest(
 	default:
 		lowerModel := strings.ToLower(cleanModel)
 		switch {
+		case gjson.GetBytes(body, "questions").Exists():
+			targetPath = "/v1beta/decisions"
+			if len(body) > 0 && cleanModel != "" {
+				if updated, err := sjson.SetBytes(body, "model", cleanModel); err == nil {
+					body = updated
+				}
+			}
 		case gjson.GetBytes(body, "messages").Exists():
 			targetPath = "/v1/chat/completions"
 			if cleanModel != "" {

@@ -75,7 +75,7 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 	candidateByAccount := make(map[string]string, len(aistudioCandidates))
 	var poolFallbackCandidateID string
 	for _, cand := range aistudioCandidates {
-		if strings.EqualFold(cand.Status, "disabled") || strings.EqualFold(cand.Status, "unavailable") {
+		if strings.EqualFold(cand.Status, "disabled") || strings.EqualFold(cand.Status, "unavailable") || strings.EqualFold(cand.Status, "restricted") {
 			continue
 		}
 		accID := extractAccountIDFromAuth(nil, cand.Metadata, cand.Attributes)
@@ -90,7 +90,10 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 	}
 
 	upstreamMethod := inferUpstreamMethodForModel(cleanModel)
+<<<<<<< HEAD
 	// Classify candidates using AIStudio2API's native AccountPool (respecting benefit tiers, model catalog, cooldowns, and active concurrency)
+=======
+>>>>>>> 14e0b7697f118600db31587e7ec7f62f23805eb2
 	allowedAccounts := make([]string, 0, len(candidateByAccount))
 	for accID := range candidateByAccount {
 		allowedAccounts = append(allowedAccounts, accID)
@@ -116,6 +119,7 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 	if req.Options.Metadata != nil {
 		if selID, ok := req.Options.Metadata[pluginapi.SelectionIDMetadataKey].(string); ok && strings.TrimSpace(selID) != "" {
 			hostDispatched = true
+<<<<<<< HEAD
 		}
 	}
 
@@ -127,6 +131,19 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 			g.StandbyBusy,
 			g.WarmBusy,
 		}
+=======
+		}
+	}
+
+	if classifyErr == nil {
+		orderedTiers := [][]string{
+			groups.WarmReady,
+			groups.StandbyReady,
+			groups.WarmAvailable,
+			groups.StandbyBusy,
+			groups.WarmBusy,
+		}
+>>>>>>> 14e0b7697f118600db31587e7ec7f62f23805eb2
 		var firstEligibleAuthID string
 		eligibleCandidateCount := 0
 		for _, tier := range orderedTiers {
@@ -142,6 +159,7 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 
 		// Defer to the host's SessionAffinitySelector + RoundRobinSelector whenever
 		// hostDispatched is true and at least one candidate account is eligible in the
+<<<<<<< HEAD
 		// plugin pool. Returning Handled: true with firstEligibleAuthID whenever 1-2
 		// sibling accounts are in plugin-local cooldown (eligibleCandidateCount < len)
 		// bypasses the host's SessionAffinitySelector completely! Even if the host's
@@ -150,20 +168,33 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 		// warm account without losing host LCP affinity for healthy sessions.
 		if hostDispatched && eligibleCandidateCount > 0 {
 			return pluginapi.SchedulerPickResponse{Handled: false}, 0, true
+=======
+		// plugin pool.
+		if hostDispatched && eligibleCandidateCount > 0 {
+			return pluginapi.SchedulerPickResponse{Handled: false}, nil
+>>>>>>> 14e0b7697f118600db31587e7ec7f62f23805eb2
 		}
 
 		if firstEligibleAuthID != "" {
 			return pluginapi.SchedulerPickResponse{
 				Handled: true,
 				AuthID:  firstEligibleAuthID,
+<<<<<<< HEAD
 			}, 0, true
+=======
+			}, nil
+>>>>>>> 14e0b7697f118600db31587e7ec7f62f23805eb2
 		}
 
 		// If a generic pool auth file exists and at least one pool account is eligible, pick it
 		totalEligible := len(g.WarmReady) + len(g.StandbyReady) + len(g.WarmAvailable) + len(g.StandbyBusy) + len(g.WarmBusy)
 		if totalEligible > 0 && poolFallbackCandidateID != "" {
 			if hostDispatched && len(candidateByAccount) == 0 {
+<<<<<<< HEAD
 				return pluginapi.SchedulerPickResponse{Handled: false}, totalEligible, true
+=======
+				return pluginapi.SchedulerPickResponse{Handled: false}, nil
+>>>>>>> 14e0b7697f118600db31587e7ec7f62f23805eb2
 			}
 			return pluginapi.SchedulerPickResponse{
 				Handled: true,
@@ -173,6 +204,7 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 		return pluginapi.SchedulerPickResponse{}, totalEligible, false
 	}
 
+<<<<<<< HEAD
 	if classifyErr == nil {
 		if resp, _, matched := pickFromClassifiedGroups(groups); matched {
 			return resp, nil
@@ -198,6 +230,20 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 					RejectReason: fmt.Sprintf("all AI Studio accounts for model %s are cooling down until %s (%s)", cleanModel, groups.EarliestCooldown.Until.Format(time.RFC3339), groups.EarliestCooldown.Reason),
 				}, nil
 			}
+=======
+		// If all accounts in the pool are cooling down for this model and cooldown exceeds 60s, report 429 cooldown
+		if totalEligible == 0 && !groups.EarliestCooldown.Until.IsZero() && time.Until(groups.EarliestCooldown.Until) > time.Minute {
+			rejectCode := "rate_limit_exceeded"
+			if strings.HasPrefix(groups.EarliestCooldown.Reason, aistudio.AccountRejectionKind) {
+				rejectCode = "account_unavailable"
+			}
+			return pluginapi.SchedulerPickResponse{
+				Handled:      true,
+				Reject:       true,
+				RejectCode:   rejectCode,
+				RejectReason: fmt.Sprintf("all AI Studio accounts for model %s are cooling down until %s (%s)", cleanModel, groups.EarliestCooldown.Until.Format(time.RFC3339), groups.EarliestCooldown.Reason),
+			}, nil
+>>>>>>> 14e0b7697f118600db31587e7ec7f62f23805eb2
 		}
 	}
 
@@ -207,7 +253,7 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 
 	// Fallback: match any ready/busy account from Pool.Status()
 	for _, st := range rt.Pool().Status() {
-		if !st.Enabled || st.State == aistudio.AccountCooldown || st.State == aistudio.AccountAuthRequired {
+		if !st.Enabled || st.State == aistudio.AccountCooldown || st.State == aistudio.AccountAuthRequired || st.State == aistudio.AccountRestricted || st.State == aistudio.AccountUnavailable {
 			continue
 		}
 		if authID, ok := candidateByAccount[strings.ToLower(strings.TrimSpace(st.ID))]; ok && authID != "" {
@@ -234,6 +280,8 @@ func (p *Plugin) handleSchedulerPick(raw []byte) (any, error) {
 func inferUpstreamMethodForModel(modelID string) string {
 	lower := strings.ToLower(strings.TrimSpace(modelID))
 	switch {
+	case strings.Contains(lower, "decision"):
+		return "createDecision"
 	case strings.Contains(lower, "embedding"):
 		return "embedContent"
 	case strings.Contains(lower, "veo"):
@@ -336,9 +384,9 @@ func (p *Plugin) handleQuotaFetch(raw []byte) (any, error) {
 			}
 		}
 
-		if matched.State == aistudio.AccountAuthRequired || !matched.Enabled {
+		if matched.State == aistudio.AccountAuthRequired || matched.State == aistudio.AccountRestricted || !matched.Enabled {
 			remaining = 0.0
-			desc = "账户需要重新登录或已停用"
+			desc = "账户需要重新登录、服务受限或已停用"
 			if matched.Message != "" {
 				desc = matched.Message
 			}

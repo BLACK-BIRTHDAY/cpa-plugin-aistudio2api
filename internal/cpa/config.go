@@ -14,7 +14,7 @@ import (
 
 const (
 	PluginID      = "aistudio2api"
-	PluginVersion = "1.2.2"
+	PluginVersion = "1.2.4"
 	ProviderID    = "aistudio2api"
 )
 
@@ -29,9 +29,16 @@ type PluginConfig struct {
 	WarmStartupConc        *int          `json:"warm_startup_concurrency" yaml:"warm_startup_concurrency"`
 	PerAccountConcurrency  *int          `json:"per_account_concurrency" yaml:"per_account_concurrency"`
 	UpstreamChannels       []string      `json:"upstream_channels" yaml:"upstream_channels"`
+<<<<<<< HEAD
 	RoutingStrategy        string        `json:"routing_strategy" yaml:"routing_strategy"`
 	AccountOrder           string        `json:"account_order" yaml:"account_order"`
 	ModelChannels          string        `json:"model_channels" yaml:"model_channels"`
+=======
+	ModelChannels          string        `json:"model_channels" yaml:"model_channels"`
+	RoutingStrategy        string        `json:"routing_strategy" yaml:"routing_strategy"`
+	AccountOrder           string        `json:"account_order" yaml:"account_order"`
+	MaxAccountSwitches     *int          `json:"max_account_switches" yaml:"max_account_switches"`
+>>>>>>> 14e0b7697f118600db31587e7ec7f62f23805eb2
 	ModelAccounts          string        `json:"model_accounts" yaml:"model_accounts"`
 	ModelAliases           string        `json:"model_aliases" yaml:"model_aliases"`
 	ModelMapping           string        `json:"model_mapping,omitempty" yaml:"model_mapping,omitempty"`
@@ -42,9 +49,14 @@ type PluginConfig struct {
 	YouTubeLinks           *bool         `json:"youtube_links" yaml:"youtube_links"`
 	FirstEventHedge        string        `json:"first_event_hedge" yaml:"first_event_hedge"`
 	FirstEventHedgeModels  string        `json:"first_event_hedge_models" yaml:"first_event_hedge_models"`
+<<<<<<< HEAD
 	BuildStallTimeout      string        `json:"build_stall_timeout" yaml:"build_stall_timeout"`
 	AssistantFallback      *bool         `json:"assistant_fallback" yaml:"assistant_fallback"`
 	SearchModelAliases     *bool         `json:"search_model_aliases" yaml:"search_model_aliases"`
+=======
+	SearchModelAliases     *bool         `json:"search_model_aliases" yaml:"search_model_aliases"`
+	DiscoverHiddenModels   *bool         `json:"discover_hidden_models" yaml:"discover_hidden_models"`
+>>>>>>> 14e0b7697f118600db31587e7ec7f62f23805eb2
 	GoogleSearch           *bool         `json:"google_search" yaml:"google_search"`
 	ContinuationRewrite    *bool         `json:"continuation_rewrite" yaml:"continuation_rewrite"`
 	ContinuationPrompt     string        `json:"continuation_prompt" yaml:"continuation_prompt"`
@@ -110,6 +122,9 @@ func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
 			if pcfg.AccountOrder == "" {
 				pcfg.AccountOrder = opt.AccountOrder
 			}
+			if pcfg.MaxAccountSwitches == nil {
+				pcfg.MaxAccountSwitches = opt.MaxAccountSwitches
+			}
 			if pcfg.ModelAccounts == "" {
 				pcfg.ModelAccounts = opt.ModelAccounts
 			}
@@ -140,14 +155,20 @@ func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
 			if pcfg.FirstEventHedgeModels == "" {
 				pcfg.FirstEventHedgeModels = opt.FirstEventHedgeModels
 			}
+<<<<<<< HEAD
 			if pcfg.BuildStallTimeout == "" {
 				pcfg.BuildStallTimeout = opt.BuildStallTimeout
 			}
 			if pcfg.AssistantFallback == nil {
 				pcfg.AssistantFallback = opt.AssistantFallback
 			}
+=======
+>>>>>>> 14e0b7697f118600db31587e7ec7f62f23805eb2
 			if pcfg.SearchModelAliases == nil {
 				pcfg.SearchModelAliases = opt.SearchModelAliases
+			}
+			if pcfg.DiscoverHiddenModels == nil {
+				pcfg.DiscoverHiddenModels = opt.DiscoverHiddenModels
 			}
 			if pcfg.GoogleSearch == nil {
 				pcfg.GoogleSearch = opt.GoogleSearch
@@ -257,6 +278,9 @@ func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
 		cfg.RoutingStrategy = strategy
 	}
 	cfg.AccountOrder = strings.TrimSpace(pcfg.AccountOrder)
+	if pcfg.MaxAccountSwitches != nil && *pcfg.MaxAccountSwitches >= 0 {
+		cfg.MaxAccountSwitches = *pcfg.MaxAccountSwitches
+	}
 	cfg.ModelAccounts = strings.TrimSpace(pcfg.ModelAccounts)
 	aliasesRaw := strings.TrimSpace(pcfg.ModelAliases)
 	if aliasesRaw == "" {
@@ -277,6 +301,7 @@ func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
 	}
 	cfg.FirstEventHedge = hedge
 	cfg.FirstEventHedgeModels = hedgeModels
+<<<<<<< HEAD
 	buildStallRaw := strings.TrimSpace(pcfg.BuildStallTimeout)
 	if buildStallRaw == "" {
 		buildStallRaw = strings.TrimSpace(os.Getenv("BUILD_STALL_TIMEOUT"))
@@ -293,7 +318,10 @@ func ParsePluginConfig(raw []byte) (PluginConfig, config.Config, error) {
 	} else {
 		cfg.AssistantFallback = false
 	}
+=======
+>>>>>>> 14e0b7697f118600db31587e7ec7f62f23805eb2
 	cfg.SearchModelAliases = boolOrDefault(pcfg.SearchModelAliases, true)
+	cfg.DiscoverHiddenModels = boolOrDefault(pcfg.DiscoverHiddenModels, false)
 	cfg.GoogleSearch = boolOrDefault(pcfg.GoogleSearch, false)
 	cfg.ContinuationRewrite = boolOrDefault(pcfg.ContinuationRewrite, true)
 	if strings.TrimSpace(pcfg.ContinuationPrompt) != "" {

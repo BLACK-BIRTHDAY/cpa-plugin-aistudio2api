@@ -33,8 +33,8 @@ func requestLogData(entry api.AccessLog) *api.RequestLog {
 			InputTokens: usage.InputTokens + usage.ToolTokens, CachedTokens: usage.CachedTokens, ReasoningTokens: usage.ReasoningTokens,
 			ReplyTokens: usage.OutputTokens, OutputTokens: output, TotalTokens: usage.TotalTokens,
 		}
-		if entry.Latency > 0 {
-			data.Usage.AverageTokensPerSecond = float64(output) / entry.Latency.Seconds()
+		if generation := entry.Latency - entry.FirstEvent; generation > 0 && output > entry.FirstOutput {
+			data.Usage.AverageTokensPerSecond = float64(output-entry.FirstOutput) / generation.Seconds()
 		}
 	}
 	return data

@@ -223,33 +223,46 @@ func deviceBoundSession(state aistudio.StorageState) bool {
 	return bound
 }
 
-// cookieAccountEntries 以 template 为模板为每个会话账户生成一项并标记已导入的账户，没有账户时只返回 template
-func cookieAccountEntries(template api.CookieBrowser, accounts []chromeauth.CookieAccount, existing map[string]struct{}) []api.CookieBrowser {
+// cookieAccountEntries 以 template 为模板为每个会话账户生成一项并标记已导入与服务受限的账户，没有账户时只返回 template
+func cookieAccountEntries(template api.CookieBrowser, accounts []chromeauth.CookieAccount, existing map[string]string) []api.CookieBrowser {
 	if len(accounts) == 0 {
 		return []api.CookieBrowser{template}
 	}
 	entries := make([]api.CookieBrowser, len(accounts))
 	for index, account := range accounts {
 		entry := template
-		entry.Email, entry.AuthUser = account.Email, account.AuthUser
-		_, entry.Imported = existing[account.Email]
+		entry.Email, entry.AuthUser, entry.Restricted = account.Email, account.AuthUser, account.Restricted
+		if restricted, imported := existing[account.Email]; imported {
+			entry.Imported = true
+			if restricted != "" {
+				entry.Restricted = restricted
+			}
+		}
 		entries[index] = entry
 	}
 	return entries
 }
 
-// accountIDs 返回已导入且未处于认证失效状态的账户小写 ID
-func (admin *runtimeAdmin) accountIDs() map[string]struct{} {
-	existing := make(map[string]struct{})
+// accountIDs 返回已导入且不需要重新登录的账户小写 ID 与其服务受限的原因，没有受限时原因为空
+func (admin *runtimeAdmin) accountIDs() map[string]string {
+	existing := make(map[string]string)
 	for _, status := range admin.pool.Status() {
 		if status.State == aistudio.AccountAuthRequired {
 			continue
 		}
-		existing[strings.ToLower(strings.TrimSpace(status.ID))] = struct{}{}
+		restricted := ""
+		if status.State == aistudio.AccountRestricted {
+			restricted = status.Message
+		}
+		existing[strings.ToLower(strings.TrimSpace(status.ID))] = restricted
 	}
 	return existing
 }
 
+// accountRestricted 返回账户服务受限、拒绝导入的错误
+func accountRestricted(email string, reason string) error {
+	return &adminOperationError{status: http.StatusForbidden, code: "account_restricted", message: fmt.Sprintf("%s 服务受限，未导入：%s", email, reason)}
+}
 func (admin *runtimeAdmin) ImportChromeAccounts(context.Context, api.ChromeImportInput) ([]api.AdminAccount, error) {
 	return nil, invalidAccount(fmt.Errorf("插件模式不支持读取本机浏览器，请粘贴 Cookie 或 StorageState 导入"))
 }
@@ -265,6 +278,9 @@ func (admin *runtimeAdmin) ImportAccountState(ctx context.Context, input api.Acc
 		verification, err := chromeauth.VerifyAuthUser(ctx, &input.StorageState, admin.effectiveProxy(input.Proxy), input.AuthUser)
 		if errors.Is(err, chromeauth.ErrSignedOut) {
 			return api.AdminAccount{}, &adminOperationError{status: http.StatusBadRequest, code: "signed_out", message: err.Error()}
+		}
+		if denial := aistudio.RestrictionDenial(err); denial != nil {
+			return api.AdminAccount{}, accountRestricted(fmt.Sprintf("u/%d", input.AuthUser), denial.Error())
 		}
 		if err != nil {
 			return api.AdminAccount{}, invalidAccount(err)
@@ -525,12 +541,6 @@ func (admin *runtimeAdmin) DeleteAccount(ctx context.Context, accountID string) 
 	account, err := admin.account(accountID)
 	if err != nil {
 		return err
-	}
-	if err := admin.service.catalog.DeleteAccountAssistantApplets(ctx, accountID); err != nil {
-		if appletCleanupRetryable(err) {
-			return fmt.Errorf("账户写代码助手应用删除失败 | 账户=%s | 原因: %w", account.Label, err)
-		}
-		admin.requests.log("auth", "WARN", fmt.Sprintf("账户写代码助手应用删除失败 | 账户=%s | 原因: %v", account.Label, err))
 	}
 	defer admin.syncModelCache()
 	err = admin.service.changeModels(func() error {
@@ -909,15 +919,6 @@ func invalidAccount(err error) error {
 	}
 }
 
-// appletCleanupRetryable 判断应用删除失败后能否重试，上游明确拒绝（429 以外的 4xx）与登录态失效时该账户已无法删除这些应用
-func appletCleanupRetryable(err error) bool {
-	if aistudio.DefinitiveAuthenticationFailure(err) {
-		return false
-	}
-	var rpcErr *aistudio.RPCError
-	return !errors.As(err, &rpcErr) || rpcErr.StatusCode >= http.StatusInternalServerError || rpcErr.StatusCode == http.StatusTooManyRequests
-}
-
 func accountOperationError(err error) error {
 	switch {
 	case errors.Is(err, aistudio.ErrAccountNotFound):
@@ -981,15 +982,23 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 		BuildNativeNonstream: value.BuildNativeNonstream,
 		NonstreamKeepalive:   value.NonstreamKeepalive, FakeStream: value.FakeStream, YouTubeLinks: value.YouTubeLinks,
 		StripThoughtSignatures: value.StripThoughtSignatures,
+<<<<<<< HEAD
 		SearchModelAliases:     value.SearchModelAliases, GoogleSearch: value.GoogleSearch,
 		ContinuationRewrite: value.ContinuationRewrite, ContinuationPrompt: strings.TrimSpace(value.ContinuationPrompt),
 		FirstEventHedge: strings.ToLower(strings.TrimSpace(value.FirstEventHedge)), FirstEventHedgeModels: strings.TrimSpace(value.FirstEventHedgeModels), AssistantFallback: value.AssistantFallback, AuthStates: value.AuthStates, ListenAddr: value.ListenAddr, PreviewListenAddr: value.PreviewListenAddr,
 		ProxyAPIKey: value.APIKey, Proxy: value.Proxy, InitTimeout: initTimeout, RequestTimeout: requestTimeout, BuildStallTimeout: buildStallTimeout,
+=======
+		SearchModelAliases:     value.SearchModelAliases, DiscoverHiddenModels: value.DiscoverHiddenModels, GoogleSearch: value.GoogleSearch,
+		ContinuationRewrite: value.ContinuationRewrite, ContinuationPrompt: strings.TrimSpace(value.ContinuationPrompt),
+		FirstEventHedge: strings.ToLower(strings.TrimSpace(value.FirstEventHedge)), FirstEventHedgeModels: strings.TrimSpace(value.FirstEventHedgeModels), AuthStates: value.AuthStates, ListenAddr: value.ListenAddr, PreviewListenAddr: value.PreviewListenAddr,
+		ProxyAPIKey: value.APIKey, Proxy: value.Proxy, InitTimeout: initTimeout, RequestTimeout: requestTimeout,
+>>>>>>> 14e0b7697f118600db31587e7ec7f62f23805eb2
 		WarmWorkerLimit: value.WarmWorkerLimit, MaxActiveWorkers: value.MaxActiveWorkers,
 		WarmStartupConcurrency: value.WarmStartupConcurrency,
 		PerAccountConcurrency:  value.PerAccountConcurrency,
 		RoutingStrategy:        value.RoutingStrategy,
 		AccountOrder:           strings.TrimSpace(value.AccountOrder),
+		MaxAccountSwitches:     value.MaxAccountSwitches,
 		UpstreamChannels:       value.UpstreamChannels,
 		ModelMapping:           strings.TrimSpace(value.ModelMapping),
 		ModelChannels:          strings.TrimSpace(value.ModelChannels),
@@ -1059,8 +1068,6 @@ func (admin *runtimeAdmin) Cooldowns(context.Context) ([]api.AdminCooldown, erro
 			modelID, build := strings.CutPrefix(key, string(aistudio.ChannelBuild)+":")
 			if build {
 				channel = string(aistudio.ChannelBuild)
-			} else if admin.pool.AssistantModel(modelID) {
-				channel = string(aistudio.ChannelAssistant)
 			}
 			cooldowns = append(cooldowns, api.AdminCooldown{
 				AccountID: account.ID, AccountLabel: account.Label, Channel: channel,
@@ -1285,6 +1292,7 @@ func runtimeConfigDTO(cfg config.Config) api.RuntimeConfig {
 		BuildNativeNonstream: cfg.BuildNativeNonstream,
 		NonstreamKeepalive:   cfg.NonstreamKeepalive, FakeStream: cfg.FakeStream, YouTubeLinks: cfg.YouTubeLinks,
 		StripThoughtSignatures: cfg.StripThoughtSignatures,
+<<<<<<< HEAD
 		SearchModelAliases:     cfg.SearchModelAliases, GoogleSearch: cfg.GoogleSearch,
 		ContinuationRewrite: cfg.ContinuationRewrite, ContinuationPrompt: cfg.ContinuationPrompt,
 		FirstEventHedge: cfg.FirstEventHedge, FirstEventHedgeModels: cfg.FirstEventHedgeModels, AssistantFallback: cfg.AssistantFallback, AuthStates: cfg.AuthStates, ListenAddr: cfg.ListenAddr, APIKey: cfg.ProxyAPIKey,
@@ -1293,10 +1301,20 @@ func runtimeConfigDTO(cfg config.Config) api.RuntimeConfig {
 		Proxy: cfg.Proxy, InitTimeout: cfg.InitTimeout.String(), RequestTimeout: cfg.RequestTimeout.String(),
 		BuildStallTimeout: cfg.BuildStallTimeout.String(),
 		WarmWorkerLimit:   cfg.WarmWorkerLimit, MaxActiveWorkers: cfg.MaxActiveWorkers,
+=======
+		SearchModelAliases:     cfg.SearchModelAliases, DiscoverHiddenModels: cfg.DiscoverHiddenModels, GoogleSearch: cfg.GoogleSearch,
+		ContinuationRewrite: cfg.ContinuationRewrite, ContinuationPrompt: cfg.ContinuationPrompt,
+		FirstEventHedge: cfg.FirstEventHedge, FirstEventHedgeModels: cfg.FirstEventHedgeModels, AuthStates: cfg.AuthStates, ListenAddr: cfg.ListenAddr, APIKey: cfg.ProxyAPIKey,
+		ActiveListenAddr: cfg.ListenAddr, ActiveAPIKey: cfg.ProxyAPIKey,
+		PreviewListenAddr: cfg.PreviewListenAddr, ActivePreviewListenAddr: cfg.PreviewListenAddr,
+		Proxy: cfg.Proxy, InitTimeout: cfg.InitTimeout.String(), RequestTimeout: cfg.RequestTimeout.String(),
+		WarmWorkerLimit: cfg.WarmWorkerLimit, MaxActiveWorkers: cfg.MaxActiveWorkers,
+>>>>>>> 14e0b7697f118600db31587e7ec7f62f23805eb2
 		WarmStartupConcurrency: cfg.WarmStartupConcurrency,
 		PerAccountConcurrency:  cfg.PerAccountConcurrency,
 		RoutingStrategy:        cfg.RoutingStrategy,
 		AccountOrder:           cfg.AccountOrder,
+		MaxAccountSwitches:     cfg.MaxAccountSwitches,
 		UpstreamChannels:       cfg.UpstreamChannels,
 		ModelMapping:           cfg.ModelMapping,
 		ModelChannels:          cfg.ModelChannels,

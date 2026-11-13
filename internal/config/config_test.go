@@ -35,6 +35,7 @@ func TestParseFirstEventHedgeSupportsDurationStrings(t *testing.T) {
 		}
 	}
 }
+<<<<<<< HEAD
 
 func TestBuildStallTimeoutConfig(t *testing.T) {
 	cfg := Default()
@@ -76,3 +77,5 @@ func TestBuildStallTimeoutConfig(t *testing.T) {
 		t.Fatal("Validate() with negative BuildStallTimeout expected error, got nil")
 	}
 }
+=======
+>>>>>>> 14e0b7697f118600db31587e7ec7f62f23805eb2

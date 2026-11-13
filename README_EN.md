@@ -19,16 +19,16 @@
 ## Key Features
 
 - **In-Process SpiderMonkey BotGuard WAA Engine**: Statically links the Firefox 152 SpiderMonkey C++ engine directly into the plugin shared library (`.dylib` / `.so` / `.dll`), executing Google BotGuard WAA bytecode and generating fresh proofs in milliseconds inside the CLIProxyAPI process—no Python, Node.js, Playwright, or headless browser required.
-- **Full Playground + Build Dual-Channel Support**:
-  - **Playground Channel** (`MakerSuiteService/GenerateContent`): Supports `gemini-3.8-flash`, `gemini-4-argon`, `gemini-2.5-pro`, `gemini-2.5-flash`, Imagen, Veo, TTS, and more.
-  - **Build Channel** (`MakerSuiteService/CodeAssistantOffline`): Supports `-build` models (`gemini-3.8-flash-build`, `gemini-3.1-pro-preview-build`, etc.) plus Build-exclusive models (50+ models discovered automatically).
+- **Full Playground + Build Channel Support**:
+  - **Playground Channel** (`MakerSuiteService/GenerateContent`): Supports `gemini-3.8-flash`, `gemini-4-argon`, `gemini-2.5-pro`, `gemini-2.5-flash`, Imagen, Veo, TTS, Decision, and thinking-level suffixes (`-minimal` / `-low` / `-medium` / `-high` / `-xhigh` / `-max`).
+  - **Build Proxy Channel**: Retains the legacy Build proxy channel and optional frontend hidden-model discovery (`-build` code-assistant applet models have been removed for account safety).
 - **Native 4-Protocol Input/Output**: Accepts and streams `chat-completions` (OpenAI Chat), `responses` (OpenAI Responses), `anthropic` (Claude Messages), and `gemini` (Google Gemini Native) formats.
 - **Complete CLIProxyAPI Plugin Capabilities (All 9 Interfaces)**:
   1. `auth_provider`: Supports clicking **"Start Login"** directly in the ECPA / CPA OAuth dashboard (`auth.login_start` / `auth.login_poll`) to launch an isolated local Chrome window and auto-capture credentials, syncing 1-to-1 with `~/.cli-proxy-api/aistudio2api-<email>.json`.
-  2. `model_provider`: Static + per-credential dynamic discovery of Playground & Build model catalogs.
-  3. `model_router`: Routes both prefixed (`aistudio/<model>`) and unprefixed (`gemini-3.8-flash`, `gemini-3.8-flash-build`) model requests.
-  4. `scheduler`: Delegates to AIStudio2API's tier-aware (Paid / Free), concurrency-aware, and cooldown-aware `AccountPool`.
-  5. `executor`: Synchronous & streaming generation, Build tool calling, local SentencePiece + upstream `CountTokens`, and multimodal media handling.
+  2. `model_provider`: Static + per-credential dynamic discovery of Playground & hidden model catalogs.
+  3. `model_router`: Routes both prefixed (`aistudio/<model>`) and unprefixed (`gemini-3.8-flash`, `gemini-4-argon`) model requests.
+  4. `scheduler`: Delegates to AIStudio2API's tier-aware (Paid / Free), restricted-account-aware, concurrency-aware, and cooldown-aware `AccountPool`.
+  5. `executor`: Synchronous & streaming generation, automatic tool-call continuation, local SentencePiece + upstream `CountTokens`, and multimodal media handling.
   6. `request_lifecycle_plugin`: Tracks request completion and upstream status codes.
   7. `quota_provider`: Reports account benefit tiers, available model counts, and cooldown recovery timers in the CPA dashboard with one-click reset.
   8. `command_line_plugin`: Adds `--aistudio2api-status` and `--aistudio2api-login` CLI flags.
@@ -59,12 +59,12 @@ Open the CLIProxyAPI Management Center (or EasyCLIProxyAPI desktop app), navigat
 
 ### Option 2: Download Prebuilt Binary from GitHub Releases
 1. Download the archive for your platform from [Releases](https://github.com/jianli9158/cpa-plugin-aistudio2api/releases):
-   - macOS Apple Silicon: `aistudio2api_1.2.2_darwin_arm64.zip`
-   - macOS Intel: `aistudio2api_1.2.2_darwin_amd64.zip`
-   - Linux x86_64: `aistudio2api_1.2.2_linux_amd64.zip`
-   - Linux ARM64: `aistudio2api_1.2.2_linux_arm64.zip`
-   - Windows x86_64: `aistudio2api_1.2.2_windows_amd64.zip`
-   - Windows ARM64: `aistudio2api_1.2.2_windows_arm64.zip`
+   - macOS Apple Silicon: `aistudio2api_1.2.4_darwin_arm64.zip`
+   - macOS Intel: `aistudio2api_1.2.4_darwin_amd64.zip`
+   - Linux x86_64: `aistudio2api_1.2.4_linux_amd64.zip`
+   - Linux ARM64: `aistudio2api_1.2.4_linux_arm64.zip`
+   - Windows x86_64: `aistudio2api_1.2.4_windows_amd64.zip`
+   - Windows ARM64: `aistudio2api_1.2.4_windows_arm64.zip`
 2. Extract the dynamic library (`aistudio2api.dylib` / `aistudio2api.so` / `aistudio2api.dll`) into CLIProxyAPI's plugin directory:
    ```text
    plugins/<goos>/<goarch>/aistudio2api.{dylib,so,dll}
@@ -125,9 +125,12 @@ plugins:
 | `fake_stream` | `bool` | `false` | Collect full response upstream via non-streaming RPC before streaming events to the client |
 | `model_aliases` | `string` | `""` | Comma-separated model aliases in `alias:target` or `alias=target` format (e.g. `my-argon:gemini-4-argon,my-flash:gemini-3.8-flash-preview`) |
 | `account_order` | `string` | `""` | Priority account order under `fill-first` routing strategy (comma- or space-separated account email IDs) |
+| `max_account_switches` | `int` | `3` | Maximum additional accounts to try per request on quota/transient errors (`0` disables account switching) |
+| `discover_hidden_models` | `bool` | `false` | Probe and include unreleased hidden models from the AI Studio frontend bundle |
 | `model_accounts` | `string` | `""` | Comma-separated model-to-account bindings in `model:account1\|account2` format (e.g. `gemini-3.1-pro-preview:a@gmail.com\|b@gmail.com`) |
-| `upstream_channels` | `[]string` | `["playground"]` | Enabled upstream channels (defaults to `["playground"]`; set to `["playground", "build"]` to also enable Build channel) |
-| `first_event_hedge` | `string` | `"gemini-4-argon"` | First-event timeout backup request hedging policy (enabled for `gemini-4-argon` by default, `off` to disable) |
+| `upstream_channels` | `[]string` | `["playground"]` | Enabled upstream channels (defaults to `["playground"]`; set to `["playground", "build"]` to also enable Build proxy channel) |
+| `first_event_hedge` | `string` | `"auto"` | First-event timeout backup request hedging policy (`auto` adapts to recent latency, or duration like `"6s"`, `off` to disable) |
+| `first_event_hedge_models` | `string` | `"gemini-4-argon"` | Target models for first-event hedging (comma-separated, `*` for all models) |
 
 ---
 
@@ -205,12 +208,12 @@ curl http://127.0.0.1:8317/v1/chat/completions \
     "stream": true
   }'
 
-# Build channel model (gemini-3.8-flash-build)
+# Extra-high thinking level model (gemini-4-argon-xhigh)
 curl http://127.0.0.1:8317/v1/chat/completions \
   -H "Authorization: Bearer YOUR_CPA_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gemini-3.8-flash-build",
+    "model": "gemini-4-argon-xhigh",
     "messages": [{"role": "user", "content": "Hello!"}],
     "stream": true
   }'

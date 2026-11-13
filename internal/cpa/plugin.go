@@ -4,18 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/Mag1cFall/AIStudio2API/internal/api"
+	"github.com/Mag1cFall/AIStudio2API/internal/app"
+	"github.com/Mag1cFall/AIStudio2API/internal/config"
+	"github.com/Mag1cFall/AIStudio2API/internal/pluginabi"
+	"github.com/Mag1cFall/AIStudio2API/internal/pluginapi"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+<<<<<<< HEAD
 
 	"github.com/Mag1cFall/AIStudio2API/internal/api"
 	"github.com/Mag1cFall/AIStudio2API/internal/app"
 	"github.com/Mag1cFall/AIStudio2API/internal/config"
 	"github.com/Mag1cFall/AIStudio2API/internal/pluginabi"
 	"github.com/Mag1cFall/AIStudio2API/internal/pluginapi"
+=======
+>>>>>>> 14e0b7697f118600db31587e7ec7f62f23805eb2
 )
 
 type HostCallFunc func(method string, payload []byte) ([]byte, error)
@@ -416,7 +424,11 @@ func (p *Plugin) applyConfig(configYAML []byte, isReload bool) error {
 		}
 		p.runtime = rt
 	} else {
+<<<<<<< HEAD
 		rt.ApplyConfig(cfg)
+=======
+		rt.ApplyLiveConfig(cfg)
+>>>>>>> 14e0b7697f118600db31587e7ec7f62f23805eb2
 	}
 	p.mu.Unlock()
 	if boolOrDefault(pcfg.SyncAuthFiles, true) && rt != nil && !p.serviceStopped.Load() {

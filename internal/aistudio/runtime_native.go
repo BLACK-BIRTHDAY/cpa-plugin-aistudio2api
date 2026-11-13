@@ -38,20 +38,26 @@ func NewNativeWorker(ctx context.Context, accountID string, options camoufoxnati
 	return NewSpiderMonkeyWorker(ctx, accountID, options)
 }
 
-// Prepare 生成 fresh proof 并写入请求指定的 WAA field
+// Prepare 生成 fresh proof 并写入请求指定的 WAA field，请求带 Proof 时写入该 proof
 func (worker *NativeWorker) Prepare(ctx context.Context, request ProtectedRequest) (PreparedProtectedRequest, error) {
 	start, end, err := arrayElementSpan(request.Body, request.ProofField-1)
 	if err != nil {
 		return PreparedProtectedRequest{}, fmt.Errorf("受保护请求缺少 WAA field %d: %w", request.ProofField, err)
 	}
-	proof, headers, err := worker.proofAndHeaders(ctx, request.Prompt, request.PagePrompt, strings.HasSuffix(request.URL, "/GenerateContent") && request.PagePrompt != "")
+	proof := request.Proof
+	var headers http.Header
+	if proof == "" {
+		proof, headers, err = worker.proofAndHeaders(ctx, request.Prompt, request.PagePrompt, strings.HasSuffix(request.URL, "/GenerateContent") && request.PagePrompt != "")
+	} else {
+		headers, err = worker.current().ProtocolHeaders(ctx)
+	}
 	if err != nil {
 		return PreparedProtectedRequest{}, err
 	}
 	encoded, _ := json.Marshal(proof)
 	body := make([]byte, 0, len(request.Body)-(end-start)+len(encoded))
 	body = append(append(append(body, request.Body[:start]...), encoded...), request.Body[end:]...)
-	return PreparedProtectedRequest{Body: body, Headers: headers}, nil
+	return PreparedProtectedRequest{Body: body, Headers: headers, Proof: proof}, nil
 }
 
 // pageRunner 是写入提示词并点击 Run 后取 GenerateContent proof 的 workerRuntime
@@ -166,6 +172,7 @@ func (worker *NativeWorker) SendProtected(ctx context.Context, request Protected
 		StatusCode: response.StatusCode,
 		Header:     response.Header,
 		Body:       response.Body,
+		Proof:      request.Proof,
 	}, nil
 }
 

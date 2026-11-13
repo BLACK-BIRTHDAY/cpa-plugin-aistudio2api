@@ -345,6 +345,16 @@ func (manager *runtimeManager) GenerateImage(ctx context.Context, request aistud
 	return manager.current.service.(aistudio.ImageService).GenerateImage(ctx, request)
 }
 
+// CreateDecision 由当前生成服务回答决策问题
+func (manager *runtimeManager) CreateDecision(ctx context.Context, request aistudio.DecisionRequest) (aistudio.DecisionResult, error) {
+	if accountID := PinnedAccountIDFromContext(ctx); accountID != "" && request.AccountID == "" {
+		request.AccountID = accountID
+	}
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return manager.current.service.(aistudio.DecisionService).CreateDecision(ctx, request)
+}
+
 // GenerateVideo 由当前生成服务创建视频任务
 func (manager *runtimeManager) GenerateVideo(ctx context.Context, request aistudio.VideoRequest) (aistudio.VideoOperation, error) {
 	if accountID := PinnedAccountIDFromContext(ctx); accountID != "" && request.AccountID == "" {
@@ -651,6 +661,7 @@ func sameDataConfig(value api.RuntimeConfig, active config.Config, overrides dat
 	}
 	saved := config.Config{
 		AuthStates: value.AuthStates, Proxy: value.Proxy,
+<<<<<<< HEAD
 		InitTimeout: initTimeout, RequestTimeout: requestTimeout,
 		BuildStallTimeout:      buildStallTimeout,
 		StripThoughtSignatures: value.StripThoughtSignatures,
@@ -670,18 +681,43 @@ func sameDataConfig(value api.RuntimeConfig, active config.Config, overrides dat
 		ContinuationPrompt:     value.ContinuationPrompt,
 		MediaOutput:            value.MediaOutput,
 		MediaBaseURL:           value.MediaBaseURL,
+=======
+		InitTimeout: initTimeout, RequestTimeout: requestTimeout, StripThoughtSignatures: value.StripThoughtSignatures,
+		UpstreamChannels:      value.UpstreamChannels,
+		ModelMapping:          value.ModelMapping,
+		MaxAccountSwitches:    value.MaxAccountSwitches,
+		WAABackend:            value.WAABackend,
+		BuildNativeNonstream:  value.BuildNativeNonstream,
+		NonstreamKeepalive:    value.NonstreamKeepalive,
+		FakeStream:            value.FakeStream,
+		YouTubeLinks:          value.YouTubeLinks,
+		SearchModelAliases:    value.SearchModelAliases,
+		DiscoverHiddenModels:  value.DiscoverHiddenModels,
+		GoogleSearch:          value.GoogleSearch,
+		FirstEventHedge:       value.FirstEventHedge,
+		FirstEventHedgeModels: value.FirstEventHedgeModels,
+		ContinuationRewrite:   value.ContinuationRewrite,
+		ContinuationPrompt:    value.ContinuationPrompt,
+		MediaOutput:           value.MediaOutput,
+		MediaBaseURL:          value.MediaBaseURL,
+>>>>>>> 14e0b7697f118600db31587e7ec7f62f23805eb2
 	}
 	overrides.Apply(&saved)
 	return saved.AuthStates == active.AuthStates && saved.Proxy == active.Proxy &&
 		saved.InitTimeout == active.InitTimeout && saved.RequestTimeout == active.RequestTimeout &&
 		saved.BuildStallTimeout == active.BuildStallTimeout &&
 		slices.Equal(saved.UpstreamChannels, active.UpstreamChannels) && saved.ModelMapping == active.ModelMapping &&
+		saved.MaxAccountSwitches == active.MaxAccountSwitches &&
 		saved.WAABackend == active.WAABackend &&
 		saved.BuildNativeNonstream == active.BuildNativeNonstream &&
 		saved.NonstreamKeepalive == active.NonstreamKeepalive && saved.FakeStream == active.FakeStream &&
 		saved.YouTubeLinks == active.YouTubeLinks && saved.StripThoughtSignatures == active.StripThoughtSignatures && saved.FirstEventHedge == active.FirstEventHedge && saved.FirstEventHedgeModels == active.FirstEventHedgeModels &&
+<<<<<<< HEAD
 		saved.AssistantFallback == active.AssistantFallback &&
 		saved.SearchModelAliases == active.SearchModelAliases && saved.GoogleSearch == active.GoogleSearch &&
+=======
+		saved.SearchModelAliases == active.SearchModelAliases && saved.DiscoverHiddenModels == active.DiscoverHiddenModels && saved.GoogleSearch == active.GoogleSearch &&
+>>>>>>> 14e0b7697f118600db31587e7ec7f62f23805eb2
 		saved.ContinuationRewrite == active.ContinuationRewrite && saved.ContinuationPrompt == active.ContinuationPrompt &&
 		saved.MediaOutput == active.MediaOutput && saved.MediaBaseURL == active.MediaBaseURL
 }

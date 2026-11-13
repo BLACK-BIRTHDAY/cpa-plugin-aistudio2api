@@ -104,8 +104,12 @@ func (p *Plugin) handleModelRoute(raw []byte) (any, error) {
 
 	targetKind := pluginapi.ModelRouteTargetSelf
 	target := PluginID
+<<<<<<< HEAD
 	hasHostProvider := hasAIStudioProvider(req.AvailableProviders)
 	if hasHostProvider {
+=======
+	if hasAIStudioProvider(req.AvailableProviders) {
+>>>>>>> 14e0b7697f118600db31587e7ec7f62f23805eb2
 		// When the host already configured an oauth.model-alias entry matching this
 		// model (e.g. name: gemini-4-argon, alias: AIStudio/gemini-4-argon), defer
 		// directly to the host so GlobalModelRegistry + AuthManager + SessionAffinitySelector
@@ -214,8 +218,6 @@ func (p *Plugin) isKnownModel(modelID string) bool {
 		clean = base
 	}
 	clean = strings.TrimSuffix(clean, "-search")
-	clean = strings.TrimSuffix(clean, "-build")
-	clean = strings.TrimSuffix(clean, "-search")
 	if base, _, err := aistudio.ApplyModelSuffix(clean, aistudio.GenerationConfig{}); err == nil && base != "" {
 		clean = base
 	}
@@ -279,7 +281,7 @@ func (p *Plugin) collectCatalogModelsForAccount(accountID string) []pluginapi.Mo
 		if info.ID == "" {
 			continue
 		}
-		// Register canonical unprefixed model ID (e.g., "gemini-3.8-flash", "gemini-3.8-flash-build")
+		// Register canonical unprefixed model ID (e.g., "gemini-3.8-flash")
 		addModel(info)
 
 		// Register -search alias for models supporting Google Search grounding
@@ -499,6 +501,14 @@ func defaultFallbackModels() []aistudio.Model {
 			Methods:          []string{"embedContent", "batchEmbedContents"},
 			InputTokenLimit:  8192,
 			OutputTokenLimit: 3072,
+		},
+		{
+			ID:               "models/gemini-decision-1",
+			Name:             "Gemini Decision 1",
+			Description:      "Google AI Studio Gemini Decision model for noul, choice, and score questions",
+			Methods:          []string{"createDecision"},
+			InputTokenLimit:  1048576,
+			OutputTokenLimit: 0,
 		},
 	}
 }

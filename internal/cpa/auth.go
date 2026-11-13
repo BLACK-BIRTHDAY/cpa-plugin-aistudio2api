@@ -594,7 +594,7 @@ func (p *Plugin) buildAuthDataForAccountWithExisting(
 	accountID := strings.ToLower(strings.TrimSpace(acc.ID))
 	fileName := fmt.Sprintf("aistudio2api-%s.json", sanitizeFileComponent(accountID))
 	serviceStopped := p.serviceStopped.Load()
-	disabled := !acc.Enabled || serviceStopped
+	disabled := !acc.Enabled || acc.State == string(aistudio.AccountRestricted) || serviceStopped
 
 	payload := AuthFilePayload{
 		Type:           ProviderID,
